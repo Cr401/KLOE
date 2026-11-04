@@ -1,0 +1,13 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: leo
+      POSTGRES_PASSWORD: leo
+      POSTGRES_DB: leo
+    ports:
+      - "5432:5432"
+    volumes:
+      - leo-pg:/var/lib/postgresql/data
+volumes:
+  leo-pg:
