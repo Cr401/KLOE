@@ -175,15 +175,20 @@ def export_candidates(conn, stage: str, limit: int, exclude: set[int]) -> list[d
     return rows
 
 
-def record_batch(conn, stage: str, file_name: str) -> int:
+def batch_key(stage: str, name: str) -> str:
+    """배치 번호는 단계마다 따로 매기므로, batch.file_name(전역 unique)에는 '단계/파일명'을 넣는다."""
+    return f"{stage}/{name}"
+
+
+def record_batch(conn, stage: str, name: str) -> int:
     return conn.execute(
-        "insert into batch (stage, file_name) values (%s, %s) returning id", (stage, file_name)
+        "insert into batch (stage, file_name) values (%s, %s) returning id", (stage, batch_key(stage, name))
     ).fetchone()["id"]
 
 
 def store_report(conn, report: IngestReport) -> int:
     """검증 통과한 결과를 fact로 넣고 배치 상태를 갱신한다. 넣은 fact 수를 돌려준다."""
-    b = conn.execute("select id from batch where file_name = %s", (report.batch,)).fetchone()
+    b = conn.execute("select id from batch where file_name = %s", (batch_key(report.stage, report.batch),)).fetchone()
     batch_id = b["id"] if b else record_batch(conn, report.stage, report.batch)
     n = 0
     for job, result in report.accepted:
@@ -200,9 +205,14 @@ def store_report(conn, report: IngestReport) -> int:
             (job["provision_id"], job["text_hash"], batch_id, is_benefit, Jsonb(payload), result.extractor),
         )
         n += cur.rowcount
-    reason = None
+    # 같은 조문·해시·extractor 결과가 이미 있으면 넣지 않는다. extractor의 skill 이름이 단계마다 달라야 하는 이유.
+    duplicates = len(report.accepted) - n
+    parts = []
     if not report.ok:
-        reason = f"failed={len(report.failed)} missing={len(report.missing)}"
+        parts.append(f"failed={len(report.failed)} missing={len(report.missing)}")
+    if duplicates:
+        parts.append(f"duplicate={duplicates}")
+    reason = " ".join(parts) or None
     conn.execute(
         "update batch set status = %s, extractor = %s, ingested_at = now(), fail_reason = %s where id = %s",
         ("ingested" if report.accepted or report.ok else "failed", report.extractor, reason, batch_id),

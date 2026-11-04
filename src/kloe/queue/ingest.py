@@ -113,7 +113,10 @@ def _finish(work_dir, stage, name, claimed_path, out_path, jobs, report: IngestR
             "missing": report.missing,
         }
         (failed_dir / f"{stem}.reason.json").write_text(json.dumps(reasons, ensure_ascii=False, indent=2), encoding="utf-8")
-        retry_ids = [f["job_id"] for f in report.failed if f["job_id"] in jobs] + report.missing
+        accepted = {job["job_id"] for job, _ in report.accepted}
+        retry_ids = list(dict.fromkeys(
+            [f["job_id"] for f in report.failed if f["job_id"] in jobs and f["job_id"] not in accepted] + report.missing
+        ))
         retry = [{**jobs[j], "attempt": jobs[j].get("attempt", 0) + 1} for j in retry_ids]
         retry = [j for j in retry if j["attempt"] < MAX_ATTEMPTS]
         report.requeued = write_batch(work_dir, stage, retry)
