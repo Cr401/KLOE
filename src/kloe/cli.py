@@ -1,4 +1,4 @@
-"""leo CLI (L0). launchd가 매일 `leo nightly`를 돌린다."""
+"""kloe CLI (L0). launchd가 매일 `kloe nightly`를 돌린다."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from leo import db
-from leo.collect.law_api import LawApiClient, LawApiError
-from leo.link.delegation import link
-from leo.models import Provision
-from leo.normalize.parse import parse_law_xml
-from leo.queue import export as qx
-from leo.queue import ingest as qi
+from kloe import db
+from kloe.collect.law_api import LawApiClient, LawApiError
+from kloe.link.delegation import link
+from kloe.models import Provision
+from kloe.normalize.parse import parse_law_xml
+from kloe.queue import export as qx
+from kloe.queue import ingest as qi
 
 ROOT = Path.cwd()
 
@@ -186,15 +186,15 @@ def cmd_nightly(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="leo")
-    ap.add_argument("--db", default=None, help="Postgres URL (기본: LEO_DATABASE_URL)")
+    ap = argparse.ArgumentParser(prog="kloe")
+    ap.add_argument("--db", default=None, help="Postgres URL (기본: KLOE_DATABASE_URL)")
     ap.add_argument("--work-dir", default=str(ROOT / "work"))
     ap.add_argument("--raw-dir", default=str(ROOT / "data" / "raw"))
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("migrate").set_defaults(func=cmd_migrate)
 
-    p = sub.add_parser("fetch", help="법제처 API에서 원본 XML 받기 (LEO_OC 필요)")
+    p = sub.add_parser("fetch", help="법제처 API에서 원본 XML 받기 (KLOE_OC 필요)")
     p.add_argument("--law-id", action="append")
     p.add_argument("--laws-file", default=str(ROOT / "config" / "laws.txt"))
     p.set_defaults(func=lambda a: (cmd_fetch(a), 0)[1])

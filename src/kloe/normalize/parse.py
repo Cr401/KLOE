@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET  # 타입 표기용
 from defusedxml.ElementTree import fromstring as safe_fromstring
 from datetime import date
 
-from leo.models import Document, ParsedLaw, Provision
+from kloe.models import Document, ParsedLaw, Provision
 
 TAGS = {
     "basic": "기본정보",

@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from leo.models import Provision
+from kloe.models import Provision
 
 # 위임 주체: 대통령령 -> 시행령, 총리령·부령 -> 시행규칙
 _AUTH = r"(대통령령|총리령|[가-힣]{1,12}부령)"

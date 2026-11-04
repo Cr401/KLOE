@@ -10,9 +10,9 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from leo.queue.export import read_jsonl, stage_dir, write_batch, write_jsonl_atomic
-from leo.schema import RESULT_MODELS
-from leo.verify import verify
+from kloe.queue.export import read_jsonl, stage_dir, write_batch, write_jsonl_atomic
+from kloe.schema import RESULT_MODELS
+from kloe.verify import verify
 
 MAX_ATTEMPTS = 2  # 처음 1번 + 실패 줄 재시도 1번
 
@@ -130,7 +130,7 @@ def _is_json(raw: str) -> bool:
 
 
 def requeue_stale(work_dir: Path, stage: str, older_than_s: float, now: float | None = None) -> list[str]:
-    """결과 없이 claimed에 오래 머문 배치를 queue로 되돌린다 (`leo requeue --stale 6h`)."""
+    """결과 없이 claimed에 오래 머문 배치를 queue로 되돌린다 (`kloe requeue --stale 6h`)."""
     now = time.time() if now is None else now
     claimed = stage_dir(work_dir, "claimed", stage)
     out = stage_dir(work_dir, "out", stage)

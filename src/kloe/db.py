@@ -10,16 +10,16 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from leo.link.delegation import DelegationLink
-from leo.models import ParsedLaw
-from leo.queue.ingest import IngestReport
+from kloe.link.delegation import DelegationLink
+from kloe.models import ParsedLaw
+from kloe.queue.ingest import IngestReport
 
-DEFAULT_URL = "postgresql://leo:leo@localhost:5432/leo"
+DEFAULT_URL = "postgresql://kloe:kloe@localhost:5432/kloe"
 MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
 
 
 def connect(url: str | None = None) -> psycopg.Connection:
-    return psycopg.connect(url or os.environ.get("LEO_DATABASE_URL", DEFAULT_URL), row_factory=dict_row)
+    return psycopg.connect(url or os.environ.get("KLOE_DATABASE_URL", DEFAULT_URL), row_factory=dict_row)
 
 
 def migrate(conn: psycopg.Connection, migrations_dir: Path = MIGRATIONS) -> list[str]:

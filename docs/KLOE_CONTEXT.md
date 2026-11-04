@@ -1,7 +1,8 @@
-# LEO (Korea Legal Opportunity Engine) — 프로젝트 컨텍스트
+# KLOE (Korea Legal Opportunity Engine) — 프로젝트 컨텍스트
 
 > 최종 갱신: 2026-11-04 · 설계 버전: v0.3
 > 이 파일 하나로 프로젝트를 이어서 진행할 수 있도록 만든 인계 문서다. 1부는 맥락과 결정 이력, 2부는 설계 전문이다.
+> 2026-11-04: 시스템 이름을 LEO에서 **KLOE**로 바꿨다. 본문의 `leo` CLI, `leo/` 경로, `LEO_*` 환경변수는 각각 `kloe`, 저장소 루트, `KLOE_*`로 읽는다.
 
 ---
 

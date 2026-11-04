@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from leo.models import normalize_ws
-from leo.schema import ClassifyResult, ExtractResult, Quote
+from kloe.models import normalize_ws
+from kloe.schema import ClassifyResult, ExtractResult, Quote
 
 _UNIT = {"조": 10**12, "억": 10**8, "만": 10**4}
 _SMALL = {"천": 1000, "백": 100, "십": 10}

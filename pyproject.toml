@@ -1,5 +1,5 @@
 [project]
-name = "leo"
+name = "kloe"
 version = "0.1.0"
 description = "Korea Legal Opportunity Engine: L0 pipeline (collect, normalize, link, batch handoff, verify)"
 requires-python = ">=3.11"
@@ -13,7 +13,7 @@ dependencies = [
 dev = ["pytest>=8"]
 
 [project.scripts]
-leo = "leo.cli:main"
+kloe = "kloe.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

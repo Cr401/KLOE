@@ -2,7 +2,7 @@
 
 확인된 것 (2026-11-04): DRF 엔드포인트는 OC 키와 함께 호출 서버의 IP/도메인 등록이 필요하다.
 미확인: 연혁 조회 파라미터, 호출 한도. 여기서는 현행 본문 조회(target=law)만 다룬다.
-OC 키는 환경변수 LEO_OC로만 받고, 로그나 저장 경로에 남기지 않는다.
+OC 키는 환경변수 KLOE_OC로만 받고, 로그나 저장 경로에 남기지 않는다.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ Fetcher = Callable[[str], bytes]
 
 
 def _default_fetch(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "leo/0.1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "kloe/0.1"})
     with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 - 고정된 https 엔드포인트
         return resp.read()
 
@@ -39,7 +39,7 @@ class RawFile:
 
 class LawApiClient:
     def __init__(self, oc: str | None = None, fetch: Fetcher | None = None):
-        self.oc = oc or os.environ.get("LEO_OC", "")
+        self.oc = oc or os.environ.get("KLOE_OC", "")
         self._fetch = fetch or _default_fetch
 
     def law_url(self, law_id: str, *, oc: str | None = None) -> str:
@@ -52,7 +52,7 @@ class LawApiClient:
 
     def fetch_law(self, law_id: str, raw_dir: Path) -> RawFile:
         if not self.oc:
-            raise LawApiError("LEO_OC가 없다. 법제처 Open API OC 키를 환경변수로 넣어라.")
+            raise LawApiError("KLOE_OC가 없다. 법제처 Open API OC 키를 환경변수로 넣어라.")
         body = self._fetch(self.law_url(law_id))
         check_api_error(body)
         return save_raw(body, raw_dir, law_id=law_id, url=self.law_url(law_id, oc="***"))
