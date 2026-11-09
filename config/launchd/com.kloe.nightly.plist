@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 설치: cp config/launchd/com.kloe.nightly.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kloe.nightly.plist
+     경로는 /Users/chris/KLOE 기준이다. Mac이 03:00에 자고 있으면 깨어난 뒤 한 번 돈다. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.kloe.nightly</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/chris/KLOE/scripts/nightly.sh</string></array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/Users/chris/KLOE/logs/launchd.out</string>
+  <key>StandardErrorPath</key><string>/Users/chris/KLOE/logs/launchd.err</string>
+</dict>
+</plist>

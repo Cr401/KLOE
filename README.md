@@ -6,7 +6,7 @@
 
 - Phase 0: `data/golden/` 정답 셋은 초안. 사용자가 직접 완성한다.
 - Phase 1 (L0 코드): `src/kloe/`. 수집, 정규화, 위임 연결, 배치 내보내기/가져오기 + 검증, requeue, DB 적재, CLI. 테스트는 합성 fixture(`tests/fixtures/`, 실제 법령 아님)로 돈다.
-- 법제처 XML 태그 이름은 실제 응답을 보기 전이라 가정이다 (`src/kloe/normalize/parse.py`의 `TAGS`). OC 키를 받으면 실제 응답으로 fixture와 `TAGS`를 맞춰야 한다.
+- 법제처 XML 태그는 2026-11-09 실제 응답으로 확인했다 (`src/kloe/normalize/parse.py` 머리말). `tests/fixtures/real_jstl_excerpt.xml`이 실제 응답 발췌다.
 
 ## 실행
 
@@ -18,6 +18,18 @@ kloe migrate
 export KLOE_OC=...             # 법제처 Open API OC 키 (호출하는 기기의 IP 등록 필요)
 kloe nightly
 ```
+
+## 매일 자동 실행 (launchd, 이 Mac에서만)
+
+`scripts/nightly.sh`가 Docker·Postgres를 띄우고 `kloe migrate`, `kloe nightly`를 돈다. KLOE_OC는 `~/.zshrc`에서 읽는다. 로그는 `logs/nightly-YYYYMMDD.log`.
+
+```bash
+cp config/launchd/com.kloe.nightly.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kloe.nightly.plist   # 매일 03:00
+launchctl kickstart gui/$(id -u)/com.kloe.nightly                                 # 지금 한 번
+```
+
+Cowork는 Mac 위 Linux VM에서 돌아 `work/`는 같은 폴더로 보지만 `.venv`(macOS용)는 실행하지 못한다. 그래서 `kloe` 실행은 launchd가, Cowork 에이전트는 `work/` 파일만 맡는다.
 
 ## 테스트
 
