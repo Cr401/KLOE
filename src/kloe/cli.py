@@ -26,7 +26,8 @@ def _paths(args) -> tuple[Path, Path]:
 def _law_ids(path: Path) -> list[str]:
     if not path.exists():
         return []
-    return [l.strip() for l in path.read_text(encoding="utf-8").splitlines() if l.strip() and not l.startswith("#")]
+    lines = (l.split("#", 1)[0].strip() for l in path.read_text(encoding="utf-8").splitlines())
+    return [l for l in lines if l]
 
 
 def cmd_migrate(args) -> int:
