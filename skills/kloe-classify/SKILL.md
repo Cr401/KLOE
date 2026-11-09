@@ -49,7 +49,7 @@ DB나 다른 파일은 건드리지 않는다. 배치 파일에 없는 정보를
 ```
 
 - `job_id`: 입력 줄의 값을 그대로 복사한다.
-- `extractor`: `cowork:<모델>:kloe-classify@0.1`. `<모델>`은 지금 너를 돌리는 모델의 짧은 이름(`haiku`, `sonnet`, `opus`)이다.
+- `extractor`: `cowork:<모델>:kloe-classify@0.1`. `<모델>`은 지금 너를 돌리는 모델의 짧은 이름(`haiku`, `sonnet`, `opus`)이다. 실행기가 extractor 값을 정해 주면 그 값을 그대로 쓴다.
 - `is_benefit`: true / false.
 - `benefit_type`: `is_benefit` 이 true 면 위 표의 값 하나, false 면 `null`.
 - `reason`: 한 문장.
