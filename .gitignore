@@ -5,3 +5,4 @@ __pycache__/
 work/
 data/raw/
 .env
+logs/
