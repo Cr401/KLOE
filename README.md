@@ -41,9 +41,23 @@ launchctl kickstart gui/$(id -u)/com.kloe.nightly   # 지금 한 번 실행
 tail -f ~/Library/Logs/kloe/nightly.log
 ```
 
-`scripts/nightly.sh`가 Docker와 Postgres를 띄우고 `kloe migrate` → `kloe requeue --stale 6h` → `kloe nightly`를 돌린다. 내보내기는 실행마다 최대 500건(배치 25개)이라, 조특법 전체(약 4,961건)가 다 나갈 때까지 약 10일 동안 배치가 매일 늘어난다. 그 시각에 Mac이 잠자고 있으면 깨어날 때 실행된다.
+`scripts/nightly.sh`가 Docker와 Postgres를 띄우고 `kloe migrate` → `kloe requeue --stale 6h` → `kloe nightly`를 돌린다. 내보내기는 실행마다 최대 5000건이라, 아직 안 나간 조문이 첫 실행에 다 나간다. 그 시각에 Mac이 잠자고 있으면 깨어날 때 실행된다.
 
-## L1 예약 작업 (Cowork)
+## L1 헤드리스 실행 (기본)
+
+Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `kloe agent`가 하고, 에이전트에게는 Read·Write 도구만 준다.
+
+```bash
+.venv/bin/kloe agent --stage classify --model haiku --parallel 3 --max-batches 30 --ingest
+```
+
+- 처음 한 번: `claude --version`이 되는지 보고, `claude auth login`으로 구독 로그인.
+- `claude`가 PATH에 없거나(nvm 등) launchd에서 돌릴 때는 `KLOE_CLAUDE_BIN`에 전체 경로를 넣는다.
+- 실패한 배치(종료 코드 오류, 결과 없음, 줄 수 불일치, 시간 초과)는 queue로 돌아가고 같은 실행 안에서는 다시 잡지 않는다.
+- extractor는 `cc:<모델>:kloe-classify@0.1`. 검증은 그대로 `kloe ingest`가 한다.
+- 사용량 한도가 걱정되면 `--parallel`과 `--max-batches`를 줄인다.
+
+## L1 예약 작업 (Cowork, 예비)
 
 Cowork 예약 작업은 Mac 위 Linux VM에서 돌고 `kloe`를 실행하지 못한다. `work/` 파일만 다룬다 (설계 결정 16).
 KLOE 폴더를 연결하고, 모델은 Haiku·effort medium, 프롬프트는 한 줄:

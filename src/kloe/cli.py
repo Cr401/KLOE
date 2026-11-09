@@ -15,6 +15,7 @@ from kloe.models import Provision
 from kloe.normalize.parse import parse_law_xml
 from kloe.queue import export as qx
 from kloe.queue import ingest as qi
+from kloe.queue import runner as qr
 
 ROOT = Path.cwd()
 
@@ -161,6 +162,18 @@ def cmd_requeue(args) -> int:
     return 0
 
 
+def cmd_agent(args) -> int:
+    work_dir, _ = _paths(args)
+    results = qr.run(work_dir, args.stage, model=args.model, parallel=args.parallel,
+                     max_batches=args.max_batches, timeout=args.timeout)
+    ok = sum(r.ok for r in results)
+    print(f"agent {args.stage}: {ok} ok, {len(results) - ok} failed")
+    if args.ingest:
+        with db.connect(args.db) as conn:
+            ingest_stage(conn, work_dir, args.stage)
+    return 0 if ok == len(results) else 1
+
+
 def cmd_show(args) -> int:
     with db.connect(args.db) as conn:
         for r in db.provisions_as_of(conn, args.law_id, date.fromisoformat(args.as_of)):
@@ -210,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("export", help="배치 파일 내보내기")
     p.add_argument("--stage", choices=("classify", "extract"), required=True)
-    p.add_argument("--limit", type=int, default=500)
+    p.add_argument("--limit", type=int, default=5000)
     p.add_argument("--batch-size", type=int, default=20)
     p.set_defaults(func=cmd_export)
 
@@ -223,6 +236,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stage", action="append", choices=("classify", "extract"))
     p.set_defaults(func=cmd_requeue)
 
+    p = sub.add_parser("agent", help="Mac에서 claude -p로 queue 배치 처리 (L1 헤드리스)")
+    p.add_argument("--stage", choices=tuple(qr.SKILLS), default="classify")
+    p.add_argument("--model", default="haiku")
+    p.add_argument("--parallel", type=int, default=3)
+    p.add_argument("--max-batches", type=int, default=30)
+    p.add_argument("--timeout", type=int, default=900, help="배치 하나당 초")
+    p.add_argument("--ingest", action="store_true", help="끝나고 바로 kloe ingest")
+    p.set_defaults(func=cmd_agent)
+
     p = sub.add_parser("show", help="기준일 조문 재현")
     p.add_argument("--law-id", required=True)
     p.add_argument("--as-of", required=True, help="YYYY-MM-DD")
@@ -231,7 +253,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("nightly", help="수집 -> 정규화 -> 위임 연결 -> 가져오기 -> 내보내기")
     p.add_argument("--law-id", action="append")
     p.add_argument("--laws-file", default=str(ROOT / "config" / "laws.txt"))
-    p.add_argument("--limit", type=int, default=500)
+    p.add_argument("--limit", type=int, default=5000)
     p.add_argument("--batch-size", type=int, default=20)
     p.set_defaults(func=cmd_nightly)
     return ap

@@ -13,7 +13,7 @@ BenefitType = Literal[
 ]
 TriggerKind = Literal["invest", "hire", "relocate", "hold", "found", "spend", "report", "participate"]
 
-EXTRACTOR_PATTERN = r"^cowork:[^:\s]+:[^:\s]+$"  # cowork:<모델>:<skill 버전>
+EXTRACTOR_PATTERN = r"^(cowork|cc):[^:\s]+:[^:\s]+$"  # <실행 환경 cowork|cc>:<모델>:<skill 버전>
 
 
 class _Strict(BaseModel):
