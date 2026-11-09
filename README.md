@@ -35,13 +35,13 @@ KLOE_TEST_DATABASE_URL=postgresql://kloe:kloe@localhost:5432/kloe_test pytest   
 ## 매일 자동 실행 (Mac, launchd)
 
 ```bash
-# KLOE_OC가 설정된 셸에서, 저장소 루트에서
-scripts/install_launchd.sh 3        # 매일 03:00. ~/.config/kloe/env(권한 600)에 키를 저장한다
+# 저장소 루트에서. OC 키는 ~/.zshrc 의 KLOE_OC 를 실행할 때마다 읽는다 (따로 저장하지 않음)
+scripts/install_launchd.sh 3        # 매일 03:00
 launchctl kickstart gui/$(id -u)/com.kloe.nightly   # 지금 한 번 실행
 tail -f ~/Library/Logs/kloe/nightly.log
 ```
 
-`scripts/nightly.sh`가 Docker와 Postgres를 띄우고 `kloe requeue --stale 6h` → `kloe nightly`를 돌린다. 그 시각에 Mac이 잠자고 있으면 깨어날 때 실행된다.
+`scripts/nightly.sh`가 Docker와 Postgres를 띄우고 `kloe migrate` → `kloe requeue --stale 6h` → `kloe nightly`를 돌린다. 내보내기는 실행마다 최대 500건(배치 25개)이라, 조특법 전체(약 4,961건)가 다 나갈 때까지 약 10일 동안 배치가 매일 늘어난다. 그 시각에 Mac이 잠자고 있으면 깨어날 때 실행된다.
 
 ## L1 예약 작업 (Cowork)
 
