@@ -2,10 +2,12 @@ import pytest
 
 from kloe.collect.law_api import LawApiClient, LawApiError, save_raw
 
+# 2026-11-09 실제 응답 형태
 AUTH_ERROR = (
-    "<?xml version='1.0' encoding='UTF-8'?><OPEN_API><result>사용자 정보 검증에 실패하였습니다.</result>"
-    "<msg>OPEN API 호출 시 사용자 검증을 위하여 정확한 서버장비의 IP주소 및 도메인주소를 등록해 주세요.</msg></OPEN_API>"
+    '<?xml version="1.0" encoding="UTF-8"?>\n    <Response>\n        <result>사용자 정보 검증에 실패하였습니다.</result>\n'
+    "        <msg>OPEN API 호출 시 사용자 검증을 위하여 정확한 서버장비의 IP주소 및 도메인주소를 등록해 주세요.</msg>\n    </Response>"
 ).encode()
+NOT_FOUND = '<?xml version="1.0" encoding="utf-8"?><Law>일치하는 법령이 없습니다.  법령명을 확인하여 주십시오.</Law>'.encode()
 
 
 def test_fetch_saves_raw_without_oc_in_url(tmp_path, fixture_bytes):
@@ -30,8 +32,9 @@ def test_same_content_same_file(tmp_path, fixture_bytes):
     assert len(list((tmp_path / "999001").iterdir())) == 2
 
 
-def test_auth_error_is_not_saved(tmp_path):
-    client = LawApiClient(oc="x", fetch=lambda url: AUTH_ERROR)
+@pytest.mark.parametrize("body", [AUTH_ERROR, NOT_FOUND])
+def test_auth_error_is_not_saved(tmp_path, body):
+    client = LawApiClient(oc="x", fetch=lambda url: body)
     with pytest.raises(LawApiError):
         client.fetch_law("999001", tmp_path)
     assert not any(tmp_path.rglob("*.xml"))

@@ -49,6 +49,21 @@ def test_paragraph_number(raw, expected):
     assert paragraph_number(raw) == expected
 
 
+def test_real_excerpt(fixture_bytes):
+    parsed = parse_law_xml(fixture_bytes("real_jstl_excerpt.xml"))
+    doc = parsed.document
+    assert (doc.law_id, doc.law_name, doc.law_kind) == ("001584", "조세특례제한법", "법률")
+    assert doc.version_key == "20260918-21467" and doc.promulgated == date(2026, 3, 17)
+    provs = {p.article_key: p for p in parsed.provisions}
+    # 장 제목(전문)은 빠지고, 삭제 조문은 한 줄로 남고, ①이 없는 조문은 번호 없는 <항> 래퍼의 호까지 합친다
+    assert list(provs) == ["4", "5의2", "16-1", "16-2", "16-3", "16-4"]
+    assert provs["4"].text.startswith("제4조 삭제")
+    assert provs["5의2"].text.startswith("제5조의2(") and "\n3. 제1호와 제2호 외에" in provs["5의2"].text
+    assert provs["16-1"].heading == "벤처투자조합 출자 등에 대한 소득공제"
+    assert "3천만원 이하분은 100분의 100" in provs["16-1"].text and "\n6. 「자본시장과" in provs["16-1"].text
+    assert provs["16-1"].effective_from == date(2026, 9, 18)
+
+
 def test_rejects_non_law_xml():
     with pytest.raises(ValueError):
         parse_law_xml("<LawSearch><totalCnt>0</totalCnt></LawSearch>")

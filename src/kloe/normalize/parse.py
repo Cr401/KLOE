@@ -1,8 +1,11 @@
 """법제처 Open API 법령 본문 XML -> Document + Provision 목록.
 
-주의: 태그 이름은 법제처 lawService(target=law, type=XML) 응답 구조를 가정한 것이다.
-OC 키로 실제 응답을 받기 전까지는 미확인이므로, 태그 이름은 아래 TAGS 한 곳에만 둔다.
-실제 응답과 다르면 TAGS와 tests/fixtures만 고치면 된다.
+태그 이름은 2026-11-09 조세특례제한법(001584)·시행령(004920) 실제 응답으로 확인했다 (TAGS 전부 맞음).
+실제 구조에서 추정과 달랐던 점:
+- ①이 없는 조문의 호는 조문단위 바로 아래가 아니라 번호 없는 <항> 래퍼(항번호·항내용 없음) 안에 온다.
+- 가지조문이 아니면 <조문가지번호> 태그 자체가 없다. 가지 호는 <호가지번호>가 따로 있고 호내용이 '10의2.'로 시작한다.
+- 장·절 제목(조문여부=전문)도 조문번호가 붙는다(다음 조문 번호). 삭제 조문은 조문내용 '제4조 삭제 <…>' 한 줄로 온다.
+- 본문에 '<개정 …>' 주석, 표(┌…┐), <img> 텍스트가 섞여 있다. 그대로 원문으로 둔다.
 """
 
 from __future__ import annotations
@@ -125,9 +128,11 @@ def parse_law_xml(xml: bytes | str, *, url: str = "", file_path: str = "", sha25
         eff = _yyyymmdd(_text(art, TAGS["article_effective"])) or effective
         head_text = _text(art, TAGS["article_text"])
 
-        paragraphs = art.findall(TAGS["paragraph"])
+        all_paras = art.findall(TAGS["paragraph"])
+        paragraphs = [p for p in all_paras if p.find(TAGS["paragraph_no"]) is not None]
         if not paragraphs:
-            body = "\n".join([head_text, *_items_text(art)]).strip()
+            # ①이 없는 조문: 호는 번호 없는 <항> 래퍼 안에 있다
+            body = "\n".join([head_text, *(t for p in all_paras for t in _items_text(p))]).strip()
             rows = [(art_key, body)]
         else:
             rows = []
