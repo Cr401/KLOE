@@ -1,0 +1,114 @@
+"""지원사업·창업 공고 API 클라이언트와 원본 저장 (공공데이터포털 키 하나로 둘 다 쓴다).
+
+소스
+- gov24: 행정안전부_대한민국 공공서비스(혜택) 정보 (data.go.kr 15113968). 정부24·보조금24의 서비스 목록.
+  확인된 것 (2026-11-11, 포털 페이지): 경로 /gov24/v3/serviceList, /gov24/v3/serviceDetail, /gov24/v3/supportConditions,
+  page·perPage·returnType 파라미터, JSON 응답, 상세 필드 이름(서비스ID, 서비스명, 지원대상, 선정기준, 지원내용, 신청방법,
+  신청기한, 접수기관명, 구비서류, 온라인신청사이트URL, 수정일시).
+  미확인: base URL(api.odcloud.kr/api 로 가정), 키 파라미터 이름(serviceKey 로 가정), 호출 한도.
+- kstartup: 창업진흥원_K-Startup 조회서비스 (data.go.kr 15125364), getAnnouncementInformation01.
+  확인된 것 (제3자 문서): base URL, JSON 응답의 data 배열, detl_pg_url 필드, 개발계정 일 10,000건.
+  미확인: 키 파라미터 이름(serviceKey 가정), 모집중 필터 형식, 나머지 응답 필드 이름(normalize/program.py 의 FIELDS).
+
+키는 환경변수 KLOE_DATA_GO_KR_KEY(포털의 '일반 인증키(Decoding)' 값)로만 받고, 저장하는 URL에서는 *** 로 지운다.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import urllib.parse
+import urllib.request
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from pathlib import Path
+
+Fetcher = Callable[[str], bytes]
+
+SOURCES: dict[str, dict] = {
+    "gov24": {
+        "url": "https://api.odcloud.kr/api/gov24/v3/serviceDetail",
+        "params": {"returnType": "JSON"},
+        "per_page": 500,
+    },
+    "kstartup": {
+        "url": "https://apis.data.go.kr/B552735/kisedKstartupService01/getAnnouncementInformation01",
+        "params": {"returnType": "json", "cond[rcrt_prgs_yn::EQ]": "Y"},  # 모집중만 (필터 형식 미확인)
+        "per_page": 500,
+    },
+}
+
+
+def _default_fetch(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "kloe/0.1", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 - 고정된 https 엔드포인트
+        return resp.read()
+
+
+class ProgramApiError(RuntimeError):
+    pass
+
+
+@dataclass
+class RawPage:
+    source: str
+    page: int
+    path: Path
+    sha256: str
+    url: str  # 키를 지운 URL
+    rows: list[dict]
+    total: int | None
+
+
+class ProgramApiClient:
+    def __init__(self, key: str | None = None, fetch: Fetcher | None = None):
+        self.key = key or os.environ.get("KLOE_DATA_GO_KR_KEY", "")
+        self._fetch = fetch or _default_fetch
+
+    def page_url(self, source: str, page: int, *, key: str | None = None, per_page: int | None = None) -> str:
+        spec = SOURCES[source]
+        q = {"serviceKey": self.key if key is None else key, "page": page,
+             "perPage": per_page or spec["per_page"], **spec["params"]}
+        return f"{spec['url']}?{urllib.parse.urlencode(q)}"
+
+    def pages(self, source: str, raw_dir: Path, *, max_pages: int = 100, per_page: int | None = None) -> Iterator[RawPage]:
+        """1쪽부터 끝까지(또는 max_pages까지) 받는다. 각 쪽은 내용 해시 이름으로 저장한다."""
+        if source not in SOURCES:
+            raise ProgramApiError(f"모르는 소스: {source}")
+        if not self.key:
+            raise ProgramApiError("KLOE_DATA_GO_KR_KEY가 없다. 공공데이터포털 인증키를 환경변수로 넣어라.")
+        seen = 0
+        for page in range(1, max_pages + 1):
+            body = self._fetch(self.page_url(source, page, per_page=per_page))
+            rows, total = parse_page(body)
+            raw = save_raw(body, raw_dir, source=source)
+            yield RawPage(source, page, raw, hashlib.sha256(body).hexdigest(),
+                          self.page_url(source, page, key="***", per_page=per_page), rows, total)
+            seen += len(rows)
+            if not rows or (total is not None and seen >= total):
+                return
+
+
+def parse_page(body: bytes) -> tuple[list[dict], int | None]:
+    """{"data": [...], "totalCount": N} 형태만 받는다. 인증 오류(XML 또는 code/msg JSON)는 예외로 막는다."""
+    head = body[:500].decode("utf-8", errors="replace")
+    try:
+        obj = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ProgramApiError(f"JSON이 아닌 응답: {head[:300]}") from None
+    if not isinstance(obj, dict) or not isinstance(obj.get("data"), list):
+        raise ProgramApiError(f"API 오류 응답: {head[:300]}")
+    total = obj.get("totalCount", obj.get("matchCount"))
+    return [r for r in obj["data"] if isinstance(r, dict)], int(total) if total is not None else None
+
+
+def save_raw(body: bytes, raw_dir: Path, *, source: str) -> Path:
+    sha = hashlib.sha256(body).hexdigest()
+    path = Path(raw_dir) / "programs" / source / f"{sha}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        tmp = path.with_suffix(".tmp")
+        tmp.write_bytes(body)
+        tmp.rename(path)
+    return path

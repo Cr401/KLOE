@@ -54,3 +54,22 @@ class Provision:
 class ParsedLaw:
     document: Document
     provisions: list[Provision] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ProgramRecord:
+    """공고 하나 (지원사업·장학금·창업 공고). text가 인용 검증 기준이다."""
+
+    source: str
+    external_id: str
+    title: str
+    text: str
+    agency: str | None = None
+    category: str | None = None
+    url: str | None = None
+    apply_start: date | None = None
+    apply_end: date | None = None
+
+    @property
+    def text_hash(self) -> str:
+        return text_hash(self.text)

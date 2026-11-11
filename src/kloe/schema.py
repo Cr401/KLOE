@@ -103,4 +103,55 @@ class ExtractResult(_Strict):
     fact: FactPayload
 
 
-RESULT_MODELS: dict[str, type[BaseModel]] = {"classify": ClassifyResult, "extract": ExtractResult}
+Applicant = Literal["individual", "student", "business", "startup", "sme", "nonprofit", "institution", "other"]
+
+
+class Eligibility(_Strict):
+    applicant: list[Applicant] = []
+    age_min: int | None = Field(default=None, ge=0)
+    age_max: int | None = Field(default=None, ge=0)
+    regions: list[str] = []
+    business_age_max_years: float | None = Field(default=None, ge=0)  # 창업 N년 이내
+    income: str | None = None
+    other: list[TaggedText] = []
+
+
+class ProgramPayload(_Strict):
+    """공고 하나에서 뽑은 혜택 (kloe-extract-program). 공고는 거의 다 혜택이라 분류 단계 없이 바로 추출한다."""
+
+    is_benefit: bool
+    benefit_type: BenefitType | None = None
+    beneficiary: str | None = None
+    summary: str | None = None
+    eligibility: Eligibility | None = None
+    benefit_size: BenefitSize | None = None
+    apply_start: date | None = None
+    apply_end: date | None = None
+    apply_method: str | None = None
+    legal_basis: list[str] = []  # 원문에 적힌 근거 법령 이름·조문 그대로
+    quotes: list[Quote] = []
+    uncertain: list[Uncertain] = []
+
+    @model_validator(mode="after")
+    def _benefit_fields(self) -> ProgramPayload:
+        unsure = {u.field for u in self.uncertain}
+        if self.is_benefit:
+            if self.benefit_type is None and "benefit_type" not in unsure:
+                raise ValueError("혜택 공고인데 benefit_type이 없고 uncertain에도 없다")
+            if not self.quotes:
+                raise ValueError("혜택 공고인데 인용(quotes)이 없다")
+        if self.apply_start and self.apply_end and self.apply_end < self.apply_start:
+            raise ValueError("apply_end가 apply_start보다 앞섬")
+        e = self.eligibility
+        if e and e.age_min is not None and e.age_max is not None and e.age_max < e.age_min:
+            raise ValueError("eligibility.age_max가 age_min보다 작음")
+        return self
+
+
+class ProgramResult(_Strict):
+    job_id: str
+    extractor: str = Field(pattern=EXTRACTOR_PATTERN)
+    fact: ProgramPayload
+
+
+RESULT_MODELS: dict[str, type[BaseModel]] = {"classify": ClassifyResult, "extract": ExtractResult, "program": ProgramResult}
