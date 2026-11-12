@@ -27,6 +27,7 @@ def result(**fact_overrides):
 @pytest.mark.parametrize("text,amount", [
     ("3천만원", 30_000_000), ("1억원", 100_000_000), ("2억5천만원", 250_000_000),
     ("30,000,000원", 30_000_000), ("500만원", 5_000_000), ("1조 2천억원", 1_200_000_000_000),
+    ("1천5백만원", 15_000_000), ("3억 2천5백만원", 325_000_000), ("1,000만원", 10_000_000),
 ])
 def test_parse_krw(text, amount):
     assert amount in parse_krw_amounts(f"한도는 {text}으로 한다")
@@ -47,9 +48,11 @@ def test_wrong_rate_and_cap():
     assert any("rate" in e for e in errs) and any("cap_krw" in e for e in errs)
 
 
-def test_sunset_before_effective():
-    errs = verify(result(time_window={"sunset": "2025-12-31"}), JOB)
-    assert any("일몰" in e for e in errs)
+def test_expired_sunset_is_recorded_not_rejected():
+    # 결정 21: 일몰이 지난 특례도 본문이 남아 있으면 기록한다
+    assert verify(result(time_window={"sunset": "2025-12-31"}), JOB) == []
+    errs = verify(result(time_window={"sunset": "2025-12-31", "effective_from": "2026-01-01"}), JOB)
+    assert any("일몰" in e for e in errs)  # 자기 모순은 여전히 실패
 
 
 def test_schema_rules():
@@ -73,3 +76,13 @@ def test_parent_ref_must_be_in_text():
     assert any("parent_ref" in e for e in verify(r, job))
     r.fact.parent_ref = "법 제29조의4제1항"
     assert verify(r, job) == []
+
+
+@pytest.mark.parametrize("quote,rate", [
+    ("1천분의 5", 0.005), ("대통령령으로 정하는 금액의 5분의 4", 0.8), ("100분의 10", 0.1), ("1만분의 3", 0.0003),
+])
+def test_fraction_rates(quote, rate):
+    from kloe.verify import check_size
+    from kloe.schema import BenefitSize, Quote
+    assert check_size(BenefitSize(raw=quote, rate=rate), [Quote(field="benefit_size.rate", quote=quote)]) == []
+    assert check_size(BenefitSize(raw=quote, rate=rate / 2), [Quote(field="benefit_size.rate", quote=quote)])
