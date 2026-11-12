@@ -45,8 +45,12 @@ def cmd_fetch(args) -> list[Path]:
     ids = args.law_id or _law_ids(Path(args.laws_file))
     client = LawApiClient()
     files = []
-    for law_id in ids:
-        raw = client.fetch_law(law_id, raw_dir)
+    for law_id in ids:  # 한 법령이 실패해도(키 없음, 타임아웃, DNS) 나머지는 받고, 받은 것은 적재한다
+        try:
+            raw = client.fetch_law(law_id, raw_dir)
+        except (LawApiError, OSError) as e:
+            print(f"fetch 건너뜀 ({law_id}): {e}", file=sys.stderr)
+            continue
         print(f"fetched {law_id} -> {raw.path}")
         files.append(raw.path)
     return files
@@ -136,26 +140,30 @@ def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int, 
 
 def _write_batches(conn, work_dir: Path, stage: str, jobs: list[dict], batch_size: int) -> list[Path]:
     paths = []
-    for part in qx.chunk(jobs, batch_size):
-        p = qx.write_batch(work_dir, stage, part)
-        db.record_batch(conn, stage, p.name)
-        paths.append(p)
-    conn.commit()
+    with qx.work_lock(work_dir):
+        for part in qx.chunk(jobs, batch_size):
+            p = qx.write_batch(work_dir, stage, part, db.max_batch_number(conn, stage))
+            db.record_batch(conn, stage, p.name)
+            paths.append(p)
+        conn.commit()
     print(f"exported {stage}: {len(jobs)} jobs in {len(paths)} batches")
     return paths
 
 
 def ingest_stage(conn, work_dir: Path, stage: str) -> list[qi.IngestReport]:
     reports = []
-    for name in qi.ready_batches(work_dir, stage):
-        rep = qi.ingest_batch(work_dir, stage, name)
-        n = db.store_report(conn, rep)
-        if rep.requeued:
-            db.record_batch(conn, stage, rep.requeued.name)
-        conn.commit()
-        print(f"ingested {stage}/{name}: {n} facts, {len(rep.failed)} failed, {len(rep.missing)} missing"
-              + (f", requeued -> {rep.requeued.name}" if rep.requeued else ""))
-        reports.append(rep)
+    with qx.work_lock(work_dir):
+        for name in qi.ready_batches(work_dir, stage):
+            rep = qi.ingest_batch(work_dir, stage, name, finish_now=False)
+            n = db.store_report(conn, rep)
+            conn.commit()  # DB에 먼저 넣고 파일을 옮긴다. 커밋이 실패하면 파일이 남아 다음에 다시 가져온다
+            qi.finish(work_dir, stage, rep, db.max_batch_number(conn, stage))
+            if rep.requeued:
+                db.record_batch(conn, stage, rep.requeued.name)
+                conn.commit()
+            print(f"ingested {stage}/{name}: {n} facts, {len(rep.failed)} failed, {len(rep.missing)} missing"
+                  + (f", requeued -> {rep.requeued.name}" if rep.requeued else ""))
+            reports.append(rep)
     return reports
 
 
@@ -245,11 +253,7 @@ def cmd_show(args) -> int:
 
 def cmd_nightly(args) -> int:
     work_dir, raw_dir = _paths(args)
-    files: list[Path] = []
-    try:
-        files = cmd_fetch(args)
-    except LawApiError as e:
-        print(f"fetch 건너뜀: {e}", file=sys.stderr)
+    files = cmd_fetch(args)
     with db.connect(args.db) as conn:
         changed = load_files(conn, files)
         for name in sorted({_base_law_name(n) for n in changed}):

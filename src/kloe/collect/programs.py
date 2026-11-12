@@ -13,14 +13,14 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import urllib.parse
-import urllib.request
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+from kloe.collect import fetch_url, save_by_hash
 
 Fetcher = Callable[[str], bytes]
 
@@ -39,9 +39,7 @@ SOURCES: dict[str, dict] = {
 
 
 def _default_fetch(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "kloe/0.1", "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 - 고정된 https 엔드포인트
-        return resp.read()
+    return fetch_url(url, accept="application/json")
 
 
 class ProgramApiError(RuntimeError):
@@ -80,8 +78,8 @@ class ProgramApiClient:
         for page in range(1, max_pages + 1):
             body = self._fetch(self.page_url(source, page, per_page=per_page))
             rows, total = parse_page(body)
-            raw = save_raw(body, raw_dir, source=source)
-            yield RawPage(source, page, raw, hashlib.sha256(body).hexdigest(),
+            raw, sha = save_by_hash(body, Path(raw_dir) / "programs" / source, ".json")
+            yield RawPage(source, page, raw, sha,
                           self.page_url(source, page, key="***", per_page=per_page), rows, total)
             seen += len(rows)
             if not rows or (total is not None and seen >= total):
@@ -99,14 +97,3 @@ def parse_page(body: bytes) -> tuple[list[dict], int | None]:
         raise ProgramApiError(f"API 오류 응답: {head[:300]}")
     total = obj.get("matchCount", obj.get("totalCount"))  # 필터가 있으면 matchCount가 실제 건수
     return [r for r in obj["data"] if isinstance(r, dict)], int(total) if total is not None else None
-
-
-def save_raw(body: bytes, raw_dir: Path, *, source: str) -> Path:
-    sha = hashlib.sha256(body).hexdigest()
-    path = Path(raw_dir) / "programs" / source / f"{sha}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        tmp = path.with_suffix(".tmp")
-        tmp.write_bytes(body)
-        tmp.rename(path)
-    return path

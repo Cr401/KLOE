@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: kloe
       POSTGRES_DB: kloe
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"  # 같은 망의 다른 기기는 못 붙게 localhost에만 연다
     volumes:
       - kloe-pg:/var/lib/postgresql/data
 volumes:

@@ -10,8 +10,10 @@ work/
 
 from __future__ import annotations
 
+import fcntl
 import json
 import re
+from contextlib import contextmanager
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -19,6 +21,7 @@ STAGES = ("classify", "extract", "program", "synthesize", "report")
 # 단계마다 job이 가리키는 대상의 키. program 단계는 조문이 아니라 공고 판(program_version)을 다룬다.
 TARGET_KEY = {"program": "version_id"}
 STATES = ("queue", "claimed", "out", "done", "failed")
+DROPPED = "dropped.jsonl"  # 재시도까지 실패한 job
 _BATCH_RE = re.compile(r"^batch-(\d{6})\.jsonl$")
 
 
@@ -96,8 +99,9 @@ def write_jsonl_atomic(path: Path, rows: Iterable[dict]) -> Path:
     return path
 
 
-def next_batch_number(work_dir: Path, stage: str) -> int:
-    biggest = 0
+def next_batch_number(work_dir: Path, stage: str, floor: int = 0) -> int:
+    """work/ 안의 가장 큰 번호와 floor(DB에 기록된 가장 큰 번호) 중 큰 것 + 1. work/done을 지워도 이름이 겹치지 않는다."""
+    biggest = floor
     for state in STATES:
         for p in stage_dir(work_dir, state, stage).iterdir():
             m = _BATCH_RE.match(p.name)
@@ -106,22 +110,36 @@ def next_batch_number(work_dir: Path, stage: str) -> int:
     return biggest + 1
 
 
-def write_batch(work_dir: Path, stage: str, jobs: list[dict]) -> Path | None:
+def write_batch(work_dir: Path, stage: str, jobs: list[dict], floor: int = 0) -> Path | None:
     if not jobs:
         return None
-    path = stage_dir(work_dir, "queue", stage) / batch_name(next_batch_number(work_dir, stage))
+    path = stage_dir(work_dir, "queue", stage) / batch_name(next_batch_number(work_dir, stage, floor))
     return write_jsonl_atomic(path, jobs)
 
 
 def in_flight_provision_ids(work_dir: Path, stage: str) -> set[int]:
-    """아직 가져오지 않은 배치(queue, claimed)에 들어 있는 조문(program 단계는 공고 판). 중복 내보내기를 막는다."""
+    """아직 가져오지 않은 배치(queue, claimed)에 들어 있는 조문(program 단계는 공고 판)과,
+    재시도까지 실패해서 버린 조문(failed/<stage>/dropped.jsonl). 둘 다 다시 내보내지 않는다."""
     key = TARGET_KEY.get(stage, "provision_id")
     ids: set[int] = set()
     for state in ("queue", "claimed"):
         for p in stage_dir(work_dir, state, stage).glob("batch-*.jsonl"):
             ids.update(int(j[key]) for j in read_jsonl(p))
+    dropped = stage_dir(work_dir, "failed", stage) / DROPPED
+    if dropped.exists():
+        ids.update(int(j[key]) for j in read_jsonl(dropped))
     return ids
 
 
 def chunk(jobs: list[dict], size: int) -> list[list[dict]]:
     return [jobs[i : i + size] for i in range(0, len(jobs), size)]
+
+
+@contextmanager
+def work_lock(work_dir: Path):
+    """배치 번호를 매기고 파일을 옮기는 일(export, ingest)은 한 프로세스씩만 한다.
+    새벽 nightly와 `kloe agent --ingest`가 겹쳐도 같은 배치를 두 번 가져오거나 같은 번호를 쓰지 않게 한다. 중첩하면 멈춘다."""
+    Path(work_dir).mkdir(parents=True, exist_ok=True)
+    with open(Path(work_dir) / ".lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        yield

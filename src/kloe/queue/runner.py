@@ -23,7 +23,7 @@ REPO = Path(__file__).resolve().parents[3]
 SKILLS = {"classify": "kloe-classify", "extract": "kloe-extract", "program": "kloe-extract-program"}
 SKILL_VERSION = {"classify": "0.2", "extract": "0.1", "program": "0.1"}
 
-CommandBuilder = Callable[[str, str], Sequence[str]]  # (prompt, model) -> argv
+CommandBuilder = Callable[[str, str, Path], Sequence[str]]  # (prompt, model, work_dir) -> argv
 
 
 MODEL_IDS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
@@ -34,14 +34,18 @@ def claude_bin() -> str:
     return os.environ.get("KLOE_CLAUDE_BIN") or shutil.which("claude") or "claude"
 
 
-def claude_command(prompt: str, model: str) -> list[str]:
-    """에이전트에게 주는 도구는 Read, Write 뿐이다 (--tools로 나머지는 아예 없앤다)."""
+def claude_command(prompt: str, model: str, work_dir: Path) -> list[str]:
+    """에이전트에게 주는 도구는 Read, Write 뿐이다 (--tools로 나머지는 아예 없앤다).
+    공고 본문은 외부 글이라 지시가 섞여 올 수 있다. 그래서 읽기는 배치와 skill, 쓰기는 work/out 아래로만 허용한다.
+    경로 규칙의 '//'는 절대 경로, Edit 규칙은 Write에도 적용된다."""
+    work = Path(work_dir).resolve()
+    allowed = [f"Read(/{work}/claimed/**)", f"Read(/{REPO / 'skills'}/**)", f"Edit(/{work}/out/**)"]
     return [
         claude_bin(), "-p", prompt,
         "--model", MODEL_IDS.get(model, model),
         "--effort", os.environ.get("KLOE_AGENT_EFFORT", "medium"),
         "--tools", "Read,Write",
-        "--allowedTools", "Read,Write",
+        "--allowedTools", ",".join(allowed),
         "--permission-mode", "dontAsk",
         "--no-session-persistence",
         "--output-format", "text",
@@ -102,7 +106,7 @@ def run_one(work_dir: Path, stage: str, claimed: Path, model: str, *,
     skill = REPO / "skills" / SKILLS[stage] / "SKILL.md"
     prompt = build_prompt(stage, model, claimed.resolve(), tmp.resolve(), skill)
     try:
-        proc = subprocess.run(list(command(prompt, model)), cwd=REPO, capture_output=True, text=True, timeout=timeout)
+        proc = subprocess.run(list(command(prompt, model, work_dir)), cwd=REPO, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         tmp.unlink(missing_ok=True)
         release(work_dir, stage, claimed)

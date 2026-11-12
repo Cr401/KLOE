@@ -44,7 +44,8 @@ def test_pages_follow_total_and_mask_key(tmp_path):
     assert len(saved) == 2 and all("SECRET" not in f.read_text(encoding="utf-8") for f in saved)
 
 
-def test_missing_key_and_error_response(tmp_path):
+def test_missing_key_and_error_response(tmp_path, monkeypatch):
+    monkeypatch.delenv("KLOE_DATA_GO_KR_KEY", raising=False)  # 이 Mac처럼 키가 셸에 있어도 "키 없음"을 시험한다
     with pytest.raises(ProgramApiError, match="KLOE_DATA_GO_KR_KEY"):
         next(ProgramApiClient(key="", fetch=FakeFetch([])).pages("gov24", tmp_path))
     with pytest.raises(ProgramApiError, match="JSON이 아닌"):

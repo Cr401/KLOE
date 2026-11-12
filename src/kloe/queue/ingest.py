@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from kloe.queue.export import read_jsonl, stage_dir, write_batch, write_jsonl_atomic
+from kloe.queue.export import DROPPED, read_jsonl, stage_dir, write_batch, write_jsonl_atomic
 from kloe.schema import RESULT_MODELS
 from kloe.verify import verify
 
@@ -25,6 +25,7 @@ class IngestReport:
     failed: list[dict] = field(default_factory=list)  # {"job_id", "reasons", "line"}
     missing: list[str] = field(default_factory=list)  # 결과가 없는 job_id
     requeued: Path | None = None
+    jobs: dict[str, dict] = field(default_factory=dict, repr=False)  # 배치 원본 (job_id -> job)
 
     @property
     def extractor(self) -> str | None:
@@ -64,12 +65,14 @@ def _parse_result_lines(path: Path) -> list[tuple[str | None, dict | None, str]]
     return rows
 
 
-def ingest_batch(work_dir: Path, stage: str, name: str) -> IngestReport:
+def ingest_batch(work_dir: Path, stage: str, name: str, *, finish_now: bool = True) -> IngestReport:
+    """결과를 검증한다. finish_now=False면 파일은 그대로 두고, DB 커밋 뒤에 finish()를 부른다
+    (커밋 전에 done/으로 옮기면 DB 오류 때 결과를 다시 가져올 수 없다)."""
     model = RESULT_MODELS[stage]
     claimed_path = stage_dir(work_dir, "claimed", stage) / name
     out_path = stage_dir(work_dir, "out", stage) / name
     jobs = {j["job_id"]: j for j in read_jsonl(claimed_path)}
-    report = IngestReport(stage=stage, batch=name)
+    report = IngestReport(stage=stage, batch=name, jobs=jobs)
     seen: set[str] = set()
 
     for jid, obj, raw in _parse_result_lines(out_path):
@@ -96,11 +99,16 @@ def ingest_batch(work_dir: Path, stage: str, name: str) -> IngestReport:
             report.accepted.append((jobs[jid], result))
 
     report.missing = [jid for jid in jobs if jid not in seen]
-    _finish(work_dir, stage, name, claimed_path, out_path, jobs, report)
+    if finish_now:
+        finish(work_dir, stage, report)
     return report
 
 
-def _finish(work_dir, stage, name, claimed_path, out_path, jobs, report: IngestReport) -> None:
+def finish(work_dir: Path, stage: str, report: IngestReport, floor: int = 0) -> None:
+    """실패 줄 기록, 재시도 배치 쓰기(번호는 floor보다 크게), 원본·결과를 done/으로 옮기기."""
+    name, jobs = report.batch, report.jobs
+    claimed_path = stage_dir(work_dir, "claimed", stage) / name
+    out_path = stage_dir(work_dir, "out", stage) / name
     done = stage_dir(work_dir, "done", stage)
     stem = name.removesuffix(".jsonl")
     if report.failed or report.missing:
@@ -118,8 +126,12 @@ def _finish(work_dir, stage, name, claimed_path, out_path, jobs, report: IngestR
             [f["job_id"] for f in report.failed if f["job_id"] in jobs and f["job_id"] not in accepted] + report.missing
         ))
         retry = [{**jobs[j], "attempt": jobs[j].get("attempt", 0) + 1} for j in retry_ids]
+        dropped = [j for j in retry if j["attempt"] >= MAX_ATTEMPTS]
         retry = [j for j in retry if j["attempt"] < MAX_ATTEMPTS]
-        report.requeued = write_batch(work_dir, stage, retry)
+        if dropped:  # 다음 export가 다시 내보내지 않게 남긴다 (in_flight_provision_ids가 읽음). 다시 돌리려면 이 파일을 지운다
+            with open(failed_dir / DROPPED, "a", encoding="utf-8") as f:
+                f.writelines(json.dumps(j, ensure_ascii=False) + "\n" for j in dropped)
+        report.requeued = write_batch(work_dir, stage, retry, floor)
     claimed_path.rename(done / name)
     out_path.rename(done / f"{stem}.out.jsonl")
 

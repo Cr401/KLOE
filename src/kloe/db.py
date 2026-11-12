@@ -253,16 +253,24 @@ def export_candidates(conn, stage: str, limit: int, exclude: set[int], recheck: 
         raise ValueError(f"{stage} 단계 내보내기는 Phase 1 범위 밖")
     rows = [r for r in conn.execute(base + " order by p.id", {"stage": stage, "ver": f"%kloe-classify@{recheck}"}) if r["id"] not in exclude]
     rows = rows[:limit]
+    by_source: dict[int, list[dict]] = {r["id"]: [] for r in rows}
+    for x in conn.execute(  # 조문마다 따로 묻지 않고 한 번에
+        """select g.source_id, g.phrase, t.text as target_text from delegation g left join provision t on t.id = g.target_id
+           where g.source_id = any(%s) order by g.id""",
+        (list(by_source),),
+    ):
+        by_source[x["source_id"]].append({"phrase": x["phrase"], "target_text": x["target_text"]})
     for r in rows:
-        r["delegations"] = [
-            {"phrase": x["phrase"], "target_text": x["target_text"]}
-            for x in conn.execute(
-                """select g.phrase, t.text as target_text from delegation g left join provision t on t.id = g.target_id
-                   where g.source_id = %s order by g.id""",
-                (r["id"],),
-            )
-        ]
+        r["delegations"] = by_source[r["id"]]
     return rows
+
+
+def max_batch_number(conn, stage: str) -> int:
+    """이 단계에 기록된 가장 큰 배치 번호. work/를 지워도 새 배치 이름이 옛 기록과 겹치지 않게 한다."""
+    row = conn.execute(
+        r"select max(substring(file_name from 'batch-(\d+)\.jsonl$')::int) as n from batch where stage = %s", (stage,)
+    ).fetchone()
+    return row["n"] or 0
 
 
 def batch_key(stage: str, name: str) -> str:

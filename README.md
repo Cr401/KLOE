@@ -60,6 +60,8 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 - 처음 한 번: `claude --version`이 되는지 보고, `claude auth login`으로 구독 로그인.
 - `claude`가 PATH에 없거나(nvm 등) launchd에서 돌릴 때는 `KLOE_CLAUDE_BIN`에 전체 경로를 넣는다.
 - 실패한 배치(종료 코드 오류, 결과 없음, 줄 수 불일치, 시간 초과)는 queue로 돌아가고 같은 실행 안에서는 다시 잡지 않는다.
+- 에이전트는 `work/claimed/`와 `skills/`만 읽고 `work/out/`에만 쓸 수 있다 (공고 본문에 섞인 지시로 저장소 파일을 고치지 못하게).
+- 검증에서 두 번 실패한 job은 `work/failed/<stage>/dropped.jsonl`에 남고 다시 내보내지 않는다. 다시 돌리려면 그 파일을 지운다.
 - extractor는 `cc:<모델>:<skill>@<버전>`. 검증은 그대로 `kloe ingest`가 한다.
 
 ### classify 다시 돌리기 (skill을 고쳤을 때)
