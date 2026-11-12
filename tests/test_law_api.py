@@ -44,3 +44,24 @@ def test_missing_oc(tmp_path, monkeypatch):
     monkeypatch.delenv("KLOE_OC", raising=False)
     with pytest.raises(LawApiError):
         LawApiClient(fetch=lambda url: b"").fetch_law("999001", tmp_path)
+
+
+def test_fetch_keeps_going_after_network_error(tmp_path, fixture_bytes, monkeypatch):
+    """새벽에 네트워크가 끊겨도 nightly가 죽지 않고, 받은 법령은 적재로 넘긴다."""
+    import urllib.error
+    from types import SimpleNamespace
+
+    from kloe import cli
+    from kloe.collect import law_api
+
+    def fake(url):
+        if "ID=111" in url:
+            raise urllib.error.URLError("timed out")
+        return fixture_bytes("law_v1.xml")
+
+    monkeypatch.setenv("KLOE_OC", "x")
+    monkeypatch.setattr(law_api, "_default_fetch", fake)
+    args = SimpleNamespace(work_dir=str(tmp_path / "work"), raw_dir=str(tmp_path / "raw"),
+                           law_id=["111", "222"], laws_file="")
+    files = cli.cmd_fetch(args)
+    assert [f.parent.name for f in files] == ["222"]

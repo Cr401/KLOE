@@ -36,7 +36,7 @@ with open(dst, "w", encoding="utf-8") as f:
 def fake_command(tmp_path, mode="ok"):
     script = tmp_path / "fake_claude.py"
     script.write_text(FAKE, encoding="utf-8")
-    return lambda prompt, model: [sys.executable, str(script), prompt, mode]
+    return lambda prompt, model, work_dir: [sys.executable, str(script), prompt, mode]
 
 
 def test_runs_all_batches_and_ingests(tmp_path):
@@ -75,10 +75,13 @@ def test_failures_go_back_to_queue_once(tmp_path):
         assert list(qx.stage_dir(work, "out", "classify").iterdir()) == []
 
 
-def test_command_limits_tools():
-    argv = qr.claude_command("p", "haiku")
+def test_command_limits_tools(tmp_path):
+    argv = qr.claude_command("p", "haiku", tmp_path / "work")
     assert argv[argv.index("--tools") + 1] == "Read,Write"
-    assert argv[argv.index("--allowedTools") + 1] == "Read,Write"
+    work = (tmp_path / "work").resolve()
+    # 저장소 코드나 다른 파일은 못 쓰고, 결과 폴더에만 쓴다
+    assert argv[argv.index("--allowedTools") + 1].split(",") == [
+        f"Read(/{work}/claimed/**)", f"Read(/{qr.REPO / 'skills'}/**)", f"Edit(/{work}/out/**)"]
     assert argv[argv.index("--model") + 1] == "claude-haiku-5-5"
     assert argv[argv.index("--effort") + 1] == "medium"
 
@@ -90,7 +93,7 @@ def test_exec_error_releases_batch_and_stops(tmp_path):
     bad = tmp_path / "not_exec"
     bad.write_text("no shebang here\n")
     bad.chmod(0o755)
-    res = qr.run(work, "classify", parallel=1, command=lambda p, m: [str(bad), p])
+    res = qr.run(work, "classify", parallel=1, command=lambda p, m, w: [str(bad), p])
     assert len(res) == 1 and res[0].fatal and not res[0].ok
     assert len(list(qx.stage_dir(work, "queue", "classify").glob("batch-*.jsonl"))) == 4
     assert list(qx.stage_dir(work, "claimed", "classify").iterdir()) == []

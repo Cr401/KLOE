@@ -10,13 +10,13 @@ OC 키는 환경변수 KLOE_OC로만 받고, 로그나 저장 경로에 남기�
 
 from __future__ import annotations
 
-import hashlib
 import os
 import urllib.parse
-import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from kloe.collect import fetch_url, save_by_hash
 
 BASE = "https://www.law.go.kr/DRF"
 
@@ -24,9 +24,7 @@ Fetcher = Callable[[str], bytes]
 
 
 def _default_fetch(url: str) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "kloe/0.1"})
-    with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 - 고정된 https 엔드포인트
-        return resp.read()
+    return fetch_url(url)
 
 
 class LawApiError(RuntimeError):
@@ -69,12 +67,5 @@ def check_api_error(body: bytes) -> None:
 
 
 def save_raw(body: bytes, raw_dir: Path, *, law_id: str, url: str = "") -> RawFile:
-    """원본을 내용 해시로 저장한다. 같은 내용이면 같은 파일이라 다시 받아도 중복이 생기지 않는다."""
-    sha = hashlib.sha256(body).hexdigest()
-    path = Path(raw_dir) / law_id / f"{sha}.xml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        tmp = path.with_suffix(".tmp")
-        tmp.write_bytes(body)
-        tmp.rename(path)
+    path, sha = save_by_hash(body, Path(raw_dir) / law_id, ".xml")
     return RawFile(path=path, sha256=sha, url=url)

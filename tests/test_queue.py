@@ -56,6 +56,8 @@ def test_failed_lines_are_requeued_once(tmp_path):
     run_agent(tmp_path, "extract", rep.requeued.name, lambda rows: [])
     rep2 = qi.ingest_batch(tmp_path, "extract", rep.requeued.name)
     assert len(rep2.missing) == 3 and rep2.requeued is None
+    # 버린 job은 다음 export에서 빠진다 (매일 밤 다시 나가지 않게)
+    assert qx.in_flight_provision_ids(tmp_path, "extract") == {1, 2, 4}
 
 
 def test_requeue_stale(tmp_path):
@@ -74,3 +76,27 @@ def test_requeue_stale(tmp_path):
 
 def test_parse_duration():
     assert qi.parse_duration("6h") == 21600 and qi.parse_duration("30m") == 1800 and qi.parse_duration("10") == 10
+
+
+def test_finish_later_and_floor(tmp_path):
+    """DB 커밋 전에는 파일을 옮기지 않고, 재시도 배치 번호는 DB의 가장 큰 번호보다 크게 매긴다."""
+    p = qx.write_batch(tmp_path, "classify", jobs(2))
+    qi.claim(tmp_path, "classify", p.name)
+    run_agent(tmp_path, "classify", p.name, lambda rows: rows[:1])
+    rep = qi.ingest_batch(tmp_path, "classify", p.name, finish_now=False)
+    assert qi.ready_batches(tmp_path, "classify") == [p.name] and rep.requeued is None  # 아직 그대로
+    qi.finish(tmp_path, "classify", rep, floor=41)
+    assert rep.requeued.name == "batch-000042.jsonl"
+    assert qi.ready_batches(tmp_path, "classify") == []
+
+
+def test_work_lock_is_exclusive(tmp_path):
+    import fcntl
+
+    import pytest
+
+    with qx.work_lock(tmp_path):
+        with open(tmp_path / ".lock") as other, pytest.raises(BlockingIOError):
+            fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    with open(tmp_path / ".lock") as other:
+        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)  # 끝나면 풀린다
