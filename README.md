@@ -65,7 +65,7 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 - 창업진흥원_K-Startup 조회서비스: https://www.data.go.kr/data/15125364/openapi.do
 
 ```bash
-export KLOE_DATA_GO_KR_KEY=...   # ~/.zshrc 에. nightly.sh 가 실행할 때 읽는다
+scripts/set_keys.sh              # 키 입력(화면에 안 보임) -> ~/.zshrc 저장 -> 소스마다 1건 받아 확인
 .venv/bin/kloe migrate
 .venv/bin/kloe fetch-programs --source gov24 --max-pages 1   # 처음엔 한 쪽만 받아 응답 모양 확인
 .venv/bin/kloe agent --stage program --model haiku --parallel 3 --max-batches 5 --ingest
