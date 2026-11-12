@@ -10,9 +10,12 @@ from pathlib import Path
 
 from kloe import db
 from kloe.collect.law_api import LawApiClient, LawApiError
+from kloe.collect.programs import SOURCES as PROGRAM_SOURCES
+from kloe.collect.programs import ProgramApiClient, ProgramApiError
 from kloe.link.delegation import link
 from kloe.models import Provision
 from kloe.normalize.parse import parse_law_xml
+from kloe.normalize.program import parse_rows
 from kloe.queue import export as qx
 from kloe.queue import ingest as qi
 from kloe.queue import runner as qr
@@ -92,7 +95,33 @@ def link_law(conn, law_name: str) -> int:
     return n
 
 
+def fetch_programs(conn, raw_dir: Path, sources: list[str], *, max_pages: int = 100,
+                   client: ProgramApiClient | None = None) -> tuple[int, int]:
+    """공고 API를 쪽마다 받아 바로 적재한다. (새 공고 수, 새 판 수)"""
+    client = client or ProgramApiClient()
+    total_p = total_v = 0
+    for source in sources:
+        n_rows = 0
+        for page in client.pages(source, raw_dir, max_pages=max_pages):
+            records = parse_rows(source, page.rows)
+            p, v = db.store_programs(conn, records, file_path=str(page.path), sha256=page.sha256)
+            conn.commit()
+            n_rows += len(records)
+            total_p, total_v = total_p + p, total_v + v
+        print(f"fetched programs {source}: {n_rows} rows")
+    print(f"programs: {total_p} new, {total_v} new versions")
+    return total_p, total_v
+
+
 def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int) -> list[Path]:
+    if stage == "program":
+        rows = db.export_program_candidates(conn, limit, qx.in_flight_provision_ids(work_dir, stage))
+        return _write_batches(conn, work_dir, stage, [
+            qx.make_program_job(version_id=r["version_id"], text_hash=r["text_hash"], source=r["source"],
+                                title=r["title"], apply_end=r["apply_end"].isoformat() if r["apply_end"] else None,
+                                text=r["text"])
+            for r in rows
+        ], batch_size)
     rows = db.export_candidates(conn, stage, limit, qx.in_flight_provision_ids(work_dir, stage))
     jobs = [
         qx.make_job(
@@ -102,6 +131,10 @@ def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int) 
         )
         for r in rows
     ]
+    return _write_batches(conn, work_dir, stage, jobs, batch_size)
+
+
+def _write_batches(conn, work_dir: Path, stage: str, jobs: list[dict], batch_size: int) -> list[Path]:
     paths = []
     for part in qx.chunk(jobs, batch_size):
         p = qx.write_batch(work_dir, stage, part)
@@ -145,10 +178,34 @@ def cmd_export(args) -> int:
     return 0
 
 
+STAGES = ("classify", "extract", "program")
+
+
+def cmd_fetch_programs(args) -> int:
+    _, raw_dir = _paths(args)
+    with db.connect(args.db) as conn:
+        fetch_programs(conn, raw_dir, args.source or list(PROGRAM_SOURCES), max_pages=args.max_pages)
+    return 0
+
+
+def cmd_programs(args) -> int:
+    with db.connect(args.db) as conn:
+        for r in db.open_programs(conn):
+            f = r["payload"] or {}
+            if args.extracted and not f:
+                continue
+            size = (f.get("benefit_size") or {}).get("raw")
+            print(json.dumps({"source": r["source"], "title": r["title"], "agency": r["agency"],
+                              "apply_end": r["apply_end"].isoformat() if r["apply_end"] else None,
+                              "benefit_type": f.get("benefit_type"), "size": size,
+                              "beneficiary": f.get("beneficiary"), "url": r["url"]}, ensure_ascii=False))
+    return 0
+
+
 def cmd_ingest(args) -> int:
     work_dir, _ = _paths(args)
     with db.connect(args.db) as conn:
-        for stage in args.stage or ("classify", "extract"):
+        for stage in args.stage or STAGES:
             ingest_stage(conn, work_dir, stage)
     return 0
 
@@ -156,7 +213,7 @@ def cmd_ingest(args) -> int:
 def cmd_requeue(args) -> int:
     work_dir, _ = _paths(args)
     secs = qi.parse_duration(args.stale)
-    for stage in args.stage or ("classify", "extract"):
+    for stage in args.stage or STAGES:
         for name in qi.requeue_stale(work_dir, stage, secs):
             print(f"requeued {stage}/{name}")
     return 0
@@ -192,9 +249,15 @@ def cmd_nightly(args) -> int:
         changed = load_files(conn, files)
         for name in sorted({_base_law_name(n) for n in changed}):
             link_law(conn, name)
-        for stage in ("classify", "extract"):
+        for source in PROGRAM_SOURCES:  # 한 소스가 실패해도 다른 소스는 받는다
+            try:
+                fetch_programs(conn, raw_dir, [source], max_pages=args.max_pages)
+            except (ProgramApiError, OSError) as e:
+                conn.rollback()
+                print(f"공고 수집 건너뜀 ({source}): {e}", file=sys.stderr)
+        for stage in STAGES:
             ingest_stage(conn, work_dir, stage)
-        for stage in ("classify", "extract"):
+        for stage in STAGES:
             export_stage(conn, work_dir, stage, args.limit, args.batch_size)
     return 0
 
@@ -213,6 +276,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--laws-file", default=str(ROOT / "config" / "laws.txt"))
     p.set_defaults(func=lambda a: (cmd_fetch(a), 0)[1])
 
+    p = sub.add_parser("fetch-programs", help="지원사업·창업 공고 API에서 받아 적재 (KLOE_DATA_GO_KR_KEY 필요)")
+    p.add_argument("--source", action="append", choices=tuple(PROGRAM_SOURCES))
+    p.add_argument("--max-pages", type=int, default=100)
+    p.set_defaults(func=cmd_fetch_programs)
+
+    p = sub.add_parser("programs", help="마감 전 공고와 추출 결과 보기 (한 줄에 JSON 하나)")
+    p.add_argument("--extracted", action="store_true", help="추출이 끝난 공고만")
+    p.set_defaults(func=cmd_programs)
+
     p = sub.add_parser("load", help="원본 XML을 파싱해서 DB에 저장")
     p.add_argument("files", nargs="+")
     p.set_defaults(func=cmd_load)
@@ -222,18 +294,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_link)
 
     p = sub.add_parser("export", help="배치 파일 내보내기")
-    p.add_argument("--stage", choices=("classify", "extract"), required=True)
+    p.add_argument("--stage", choices=STAGES, required=True)
     p.add_argument("--limit", type=int, default=5000)
     p.add_argument("--batch-size", type=int, default=20)
     p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("ingest", help="결과 파일 가져오기 + 검증")
-    p.add_argument("--stage", action="append", choices=("classify", "extract"))
+    p.add_argument("--stage", action="append", choices=STAGES)
     p.set_defaults(func=cmd_ingest)
 
     p = sub.add_parser("requeue", help="오래된 claimed 배치를 queue로 되돌리기")
     p.add_argument("--stale", default="6h")
-    p.add_argument("--stage", action="append", choices=("classify", "extract"))
+    p.add_argument("--stage", action="append", choices=STAGES)
     p.set_defaults(func=cmd_requeue)
 
     p = sub.add_parser("agent", help="Mac에서 claude -p로 queue 배치 처리 (L1 헤드리스)")
@@ -250,11 +322,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--as-of", required=True, help="YYYY-MM-DD")
     p.set_defaults(func=cmd_show)
 
-    p = sub.add_parser("nightly", help="수집 -> 정규화 -> 위임 연결 -> 가져오기 -> 내보내기")
+    p = sub.add_parser("nightly", help="법령·공고 수집 -> 정규화 -> 위임 연결 -> 가져오기 -> 내보내기")
     p.add_argument("--law-id", action="append")
     p.add_argument("--laws-file", default=str(ROOT / "config" / "laws.txt"))
     p.add_argument("--limit", type=int, default=5000)
     p.add_argument("--batch-size", type=int, default=20)
+    p.add_argument("--max-pages", type=int, default=100, help="공고 소스마다 받을 최대 쪽 수")
     p.set_defaults(func=cmd_nightly)
     return ap
 

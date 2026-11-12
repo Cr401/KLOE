@@ -57,6 +57,27 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 - extractor는 `cc:<모델>:kloe-classify@0.1`. 검증은 그대로 `kloe ingest`가 한다.
 - 사용량 한도가 걱정되면 `--parallel`과 `--max-batches`를 줄인다.
 
+## 지원사업·장학금·창업 공고 (보조금24, K-Startup)
+
+법령 말고 공고도 모은다 (설계 결정 18, 19). 공공데이터포털(data.go.kr)에서 아래 두 API를 **활용신청**하고, 마이페이지의 일반 인증키(Decoding)를 `~/.zshrc` 에 둔다.
+
+- 행정안전부_대한민국 공공서비스(혜택) 정보: https://www.data.go.kr/data/15113968/openapi.do
+- 창업진흥원_K-Startup 조회서비스: https://www.data.go.kr/data/15125364/openapi.do
+
+```bash
+export KLOE_DATA_GO_KR_KEY=...   # ~/.zshrc 에. nightly.sh 가 실행할 때 읽는다
+.venv/bin/kloe migrate
+.venv/bin/kloe fetch-programs --source gov24 --max-pages 1   # 처음엔 한 쪽만 받아 응답 모양 확인
+.venv/bin/kloe agent --stage program --model haiku --parallel 3 --max-batches 5 --ingest
+.venv/bin/kloe programs --extracted   # 마감 전 공고 + 추출 결과
+```
+
+- `kloe nightly` 가 매일 두 소스를 받고(키가 없으면 건너뜀), 마감이 안 지난 공고를 `work/queue/program/` 으로 내보낸다.
+- 공고는 분류 없이 `kloe-extract-program` 스킬이 대상 요건, 금액, 신청 기간, 근거법령을 인용과 함께 뽑는다. 인용과 근거법령이 원문에 없으면 검증에서 떨어진다.
+- 본문이 바뀌면 새 판이 생기고 이전 추출 결과는 stale이 되어 다시 나간다.
+- 근거법령과 이미 모은 법령의 연결: `select * from program_law_basis;`
+- **가정한 것**: 보조금24 base URL(`api.odcloud.kr/api`), 두 API의 키 파라미터 이름(`serviceKey`), K-Startup 응답 필드 이름과 모집중 필터 형식. 실제 응답을 처음 받으면 `src/kloe/normalize/program.py` 의 `FIELDS`·`KEYS` 와 `tests/fixtures/programs_*.json` 을 맞춘다.
+
 ## L1 예약 작업 (Cowork, 예비)
 
 Cowork 예약 작업은 Mac 위 Linux VM에서 돌고 `kloe`를 실행하지 못한다. `work/` 파일만 다룬다 (설계 결정 16).
