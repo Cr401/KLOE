@@ -42,7 +42,7 @@ version: 0.1
 ## 결과 한 줄의 형식
 
 ```json
-{"job_id": "program:12:3f9a1c2b4d5e", "extractor": "cc:haiku:kloe-extract-program@0.1", "fact": {"is_benefit": true, "benefit_type": "subsidy", "beneficiary": "무주택 청년", "summary": "부모와 따로 사는 무주택 청년에게 월세를 월 최대 20만원씩 12개월 지원", "eligibility": {"applicant": ["individual"], "age_min": 19, "age_max": 34, "regions": [], "business_age_max_years": null, "income": "기준 중위소득 60% 이하", "other": [{"tag": "housing", "text": "무주택, 부모와 따로 거주"}]}, "benefit_size": {"raw": "월 최대 20만원", "rate": null, "cap_krw": 200000, "unit": "월"}, "apply_start": "2026-02-26", "apply_end": "2027-02-25", "apply_method": "복지로 온라인 신청 또는 행정복지센터 방문", "legal_basis": ["테스트주거지원법 제21조"], "quotes": [{"field": "eligibility", "quote": "만 19세 이상 34세 이하 무주택 청년"}, {"field": "benefit_size.cap_krw", "quote": "월 최대 20만원"}, {"field": "apply_end", "quote": "2026.02.26 ~ 2027.02.25"}], "uncertain": []}}
+{"job_id": "program:12:3f9a1c2b4d5e", "extractor": "cc:haiku:kloe-extract-program@0.1", "fact": {"is_benefit": true, "benefit_type": "subsidy", "beneficiary": "무주택 청년", "summary": "부모와 따로 사는 무주택 청년에게 월세를 월 최대 20만원씩 12개월 지원", "eligibility": {"applicant": ["individual"], "age_min": 19, "age_max": 34, "regions": [], "business_age_max_years": null, "income": "기준 중위소득 60% 이하", "other": [{"tag": "housing", "text": "무주택, 부모와 따로 거주"}]}, "benefit_size": {"raw": "월 최대 20만원", "rate": null, "cap_krw": 200000, "unit": "월"}, "apply_start": "2026-02-26", "apply_end": "2027-02-25", "apply_method": "복지로 온라인 신청 또는 행정복지센터 방문", "legal_basis": ["테스트주거지원법(제21조, 제0항)", "테스트특례법(제16조, 제1항)"], "quotes": [{"field": "eligibility", "quote": "만 19세 이상 34세 이하 무주택 청년"}, {"field": "benefit_size.cap_krw", "quote": "월 최대 20만원"}, {"field": "apply_end", "quote": "2026.02.26 ~ 2027.02.25"}], "uncertain": []}}
 ```
 
 - `job_id`: 입력 줄의 값을 그대로 복사한다. `extractor`: 실행기가 정해 주는 값을 그대로 쓴다.
@@ -53,7 +53,7 @@ version: 0.1
 - `benefit_size.cap_krw`: 1인(1개사)당 최대 금액을 원 단위 정수로. "월 20만원" 이면 200000, `unit` 에 "월". 금액이 없으면 `benefit_size` 를 `null` 로 둔다.
   `rate` 는 0~1 비율 (예: 70% → 0.7). 숫자를 넣었으면 그 숫자가 들어 있는 인용을 `field` 가 `benefit_size` 로 시작하게 넣는다.
 - `apply_start/apply_end`: `YYYY-MM-DD`. "상시" 거나 원문에 없으면 `null`.
-- `legal_basis`: 원문의 근거법령·자치법규 값을 **글자 그대로** 복사한다. 없으면 `[]`. 지어내면 검증에서 떨어진다.
+- `legal_basis`: 원문의 근거법령·자치법규 값을 **글자 그대로** 복사한다. `||` 로 이어져 있으면 `||` 에서 나눠 하나씩 넣는다. 없으면 `[]`. 지어내면 검증에서 떨어진다.
 - `quotes`: 판단 근거를 `text` 에서 **글자 그대로 복사**해서 넣는다. 고쳐 쓰거나 말줄임표를 넣으면 검증에서 떨어진다. "이름: " 접두사는 빼도 된다.
 - 확신이 없는 필드는 `null` 로 두고 `uncertain` 에 `{"field": …, "reason": …}` 로 적는다.
 - 한 줄에 JSON 하나, 줄 끝은 개행. 위에 없는 필드는 넣지 않는다.
