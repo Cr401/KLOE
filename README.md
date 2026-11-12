@@ -5,8 +5,8 @@
 ## 현재 상태
 
 - Phase 0: `data/golden/` 정답 셋은 초안. 사용자가 직접 완성한다.
-- Phase 1 (L0 코드): `src/kloe/`. 수집, 정규화, 위임 연결, 배치 내보내기/가져오기 + 검증, requeue, DB 적재, CLI. 테스트는 합성 fixture(`tests/fixtures/`, 실제 법령 아님)로 돈다.
-- 법제처 XML 태그 이름은 실제 응답을 보기 전이라 가정이다 (`src/kloe/normalize/parse.py`의 `TAGS`). OC 키를 받으면 실제 응답으로 fixture와 `TAGS`를 맞춰야 한다.
+- Phase 1 (L0 코드): `src/kloe/`. 수집, 정규화, 위임 연결, 배치 내보내기/가져오기 + 검증, requeue, DB 적재, CLI. 실제 법제처 응답(조특법·시행령·시행규칙)으로 동작을 확인했다. 테스트는 합성 fixture(`tests/fixtures/`, 실제 법령 아님)로 돈다.
+- Phase 2 (L1): classify 진행 중. 현행 조문 4,961건 분류 완료(2026-11-12), skill 0.2로 위임 항 재분류 대기. extract는 아직 skill이 없다.
 
 ## 실행
 
@@ -54,7 +54,7 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 - 처음 한 번: `claude --version`이 되는지 보고, `claude auth login`으로 구독 로그인.
 - `claude`가 PATH에 없거나(nvm 등) launchd에서 돌릴 때는 `KLOE_CLAUDE_BIN`에 전체 경로를 넣는다.
 - 실패한 배치(종료 코드 오류, 결과 없음, 줄 수 불일치, 시간 초과)는 queue로 돌아가고 같은 실행 안에서는 다시 잡지 않는다.
-- extractor는 `cc:<모델>:kloe-classify@0.1`. 검증은 그대로 `kloe ingest`가 한다.
+- extractor는 `cc:<모델>:kloe-classify@<skill 버전>` (지금 0.2). 검증은 그대로 `kloe ingest`가 한다.
 - 사용량 한도가 걱정되면 `--parallel`과 `--max-batches`를 줄인다.
 
 ## L1 예약 작업 (Cowork, 예비)
@@ -65,3 +65,14 @@ KLOE 폴더를 연결하고, 모델은 Haiku·effort medium, 프롬프트는 한
 ```
 /Users/chris/KLOE/skills/kloe-classify/SKILL.md 를 읽고 그대로 따라서 배치 하나를 처리해라.
 ```
+
+## classify 다시 돌리기 (skill을 고쳤을 때)
+
+classify는 애매하면 `true`로 둔다. `false`로 빠진 조문은 다음 단계로 가지 않아서, 놓친 것은 다시 분류해야만 되살아난다.
+
+```bash
+.venv/bin/kloe export --stage classify --recheck     # 0.1에서 false로 빠진 위임 항 중 같은 조에 true가 있는 것 (2026-11-12 기준 180건)
+.venv/bin/kloe agent --stage classify --model haiku --parallel 2 --max-batches 10 --ingest
+```
+
+- 현재 skill 버전의 결과가 이미 있는 조문은 다시 나가지 않는다. 같은 조문에 0.1 결과와 0.2 결과가 같이 남고, extract는 둘 중 하나라도 `true`면 그 조문을 내보낸다.

@@ -1,6 +1,6 @@
 # KLOE (Korea Legal Opportunity Engine) — 프로젝트 컨텍스트
 
-> 최종 갱신: 2026-11-09 · 설계 버전: v0.3
+> 최종 갱신: 2026-11-12 · 설계 버전: v0.3
 > 이 파일 하나로 프로젝트를 이어서 진행할 수 있도록 만든 인계 문서다. 1부는 맥락과 결정 이력, 2부는 설계 전문이다.
 > 2026-11-04: 시스템 이름을 LEO에서 **KLOE**로 바꿨다. 본문의 `leo` CLI, `leo/` 경로, `LEO_*` 환경변수는 각각 `kloe`, 저장소 루트, `KLOE_*`로 읽는다.
 
@@ -44,6 +44,8 @@
 | 15 | 첫 수집 범위는 조세 법령. 단, 보상 조항은 처음부터 전체 법령에 키워드 필터를 돌림 | 조세는 조세지출예산서라는 정답 셋이 있어서 재현율을 잴 수 있음. 보상 조항은 여러 법에 흩어져 있고 키워드 필터는 비용이 거의 없음 |
 | 16 | `kloe` 실행(수집·가져오기·내보내기)은 Mac의 launchd가 맡고, Cowork 예약 작업은 `work/` 파일만 다룬다 (12절 열린 질문 1의 대안 확정) | 2026-11-09 시험: Cowork 셸은 Mac 위 Linux VM이라 macOS용 `.venv`의 `kloe`를 실행하지 못함. KLOE 폴더 읽기·쓰기는 됨 |
 | 17 | L1 예약 작업은 Haiku, effort medium으로 돌린다 | 사용자 결정 (2026-11-09). 시험 작업은 기본값 Opus로 돌았음 |
+| 18 | L1의 기본 실행 수단을 Mac의 Claude Code 헤드리스(`kloe agent`, `claude -p`)로 두고, Cowork 예약 작업은 예비로 남긴다 | PR #6. 잠금·rename을 코드가 하고 에이전트에는 Read·Write만 주므로, 에이전트가 절차를 틀릴 여지가 줄어든다. 구독 로그인으로 돈다 |
+| 19 | classify는 애매하면 `true`로 두고, 걸러내는 일은 추출·분석 단계에 맡긴다. 혜택의 계산·한도·요건·신청을 하위 법령에 위임만 하는 항도 `true` (skill 0.2) | 사용자 결정 (2026-11-12). `false`로 빠진 조문은 다음 단계로 가지 않아 되살릴 수 없지만, `true`로 잘못 간 것은 뒤에서 걸러진다. 0.1 결과 검토에서 이런 위임 항 180건이 `false`로 빠진 것을 찾았고, `kloe export --stage classify --recheck`로 다시 분류한다 |
 
 ## 검토했다가 버린 대안
 
@@ -128,14 +130,15 @@ Mac(`/Users/chris/KLOE`)에서 OC 키로 실제 API를 호출해 확인했다.
 - Claude 앱 Code 탭 예약 작업: 권한 모드를 물려받지 않아 첫 셸 명령에서 승인 대기로 멈춘다. 무인 실행하려면 승인을 작업에 저장하거나 권한 모드를 바꿔야 한다.
 - Cowork 예약 작업: Mac 위 Linux VM(aarch64)에서 돌고 KLOE 폴더만 마운트된다. `work/queue` 읽기와 `work/` 쓰기는 됐다. macOS용 `.venv`의 `kloe`는 `bad interpreter`로 실행되지 않는다. VM 시계는 Europe/Berlin 기준이었으므로, 파일 이름·기록의 시각은 UTC로 통일한다.
 - 모델: 따로 고르지 않으면 Opus(`claude-opus-5-5`)로 돌았다.
-- Cowork가 쓴 파일은 Mac의 같은 폴더에 그대로 보인다 (같은 폴더가 마운트됨). 미확인: VM 마운트를 거친 rename이 잠금으로 안전한지, VM에서 Mac의 Postgres에 붙을 수 있는지 (붙을 필요는 없음). rename은 첫 classify 배치 처리 때 확인한다.
+- Cowork가 쓴 파일은 Mac의 같은 폴더에 그대로 보인다 (같은 폴더가 마운트됨). VM에서 Mac의 Postgres에 붙을 수 있는지는 미확인이다 (붙을 필요는 없음). VM 마운트를 거친 rename은 실제로 돌려 보니 문제가 없었다: 2026-11-12까지 Cowork가 classify 배치 247개를 처리했고 실패나 중복 처리는 0건이다. 다만 동시에 여러 작업이 같은 파일을 잡는 경우는 시험하지 않았다.
 
 ## 현재 상태
 
-- 설계 v0.3. 아래 2부가 전문이다. 결정 16·17을 더했다.
+- 설계 v0.3. 아래 2부가 전문이다. 결정 16~19를 더했다.
 - 저장소: GitHub `Cr401/KLOE` (Mac의 `/Users/chris/KLOE`에 clone). DB: Mac Docker의 Postgres 16.
-- **Phase 1 거의 완료.** 수집·정규화·위임 연결·배치 왕복·검증이 실제 조특법으로 동작하고 테스트 36개가 통과한다. 남은 것: 연혁 수집, 부칙 파싱, launchd 자동 실행.
-- classify 배치 25개(500건)가 `work/queue/classify`에서 대기 중이다. `skills/`는 비어 있다.
+- **Phase 1 완료.** 수집·정규화·위임 연결·배치 왕복·검증이 실제 조특법으로 동작한다. launchd가 매일 03:00에 `scripts/nightly.sh`를 돌린다. 남은 것: 연혁 수집, 부칙 파싱.
+- **Phase 2 진행 중 (classify).** 현행 조문 4,961건이 전부 분류됐다 (2026-11-12): `true` 2,414 · `false` 2,547, 전부 verified, 실패 배치 0. 대부분(4,921건)은 Cowork 예약 작업(`cowork:haiku:kloe-classify@0.1`), 40건은 `kloe agent` 시험(`cc:haiku:kloe-classify@0.1`)이다. 샘플 검토: `reports/classify-sample-2026-11-12.md`.
+- skill은 `skills/kloe-classify/SKILL.md` 0.2다 (결정 19). 0.1에서 `false`로 빠진 위임 항 180건을 `--recheck`로 다시 분류해야 한다. 그다음은 `kloe-extract` skill과 extract 단계다.
 - Phase 0 정답 셋은 사용자 몫으로 진행 중이다. `data/golden/reward_programs.csv`는 10개 제도 초안, `data/golden/tax_expenditure_2027.csv`는 헤더만 있다.
 
 ## 다음 할 일: Phase 0 체크리스트
@@ -195,7 +198,7 @@ L4  주간 보고서              reports/YYYY-Www.md
 | 계층 | 실행 수단 | 모델 | 단위 | 산출물 |
 |---|---|---|---|---|
 | L0 | `leo` CLI, launchd 매일 실행 | 없음 | 법령·조문 | DB 행, 배치 파일, 변경 이벤트 |
-| L1 | Cowork 예약 작업 (몇 시간마다) | 분류: Haiku 서브에이전트 / 추출: Sonnet (Haiku 비교 실험) | 조문 1개 | `fact` |
+| L1 | Mac의 `kloe agent`(Claude Code 헤드리스), 예비로 Cowork 예약 작업 (결정 18) | 분류: Haiku / 추출: Sonnet (Haiku 비교 실험) | 조문 1개 | `fact` |
 | L2 | Cowork 예약 작업 (주 1회) 또는 직접 실행 | Opus | 위임 체인으로 묶인 fact 묶음 | `opportunity`, `gap` 판정, 순위 근거 |
 | L3 | Cowork 대화 | Opus | 자유 | `idea`, `review` |
 | L4 | Cowork 예약 작업 (주 1회) | Opus | 한 주 | 보고서 Markdown |
@@ -521,8 +524,8 @@ leo/
 ## 12. 열린 질문
 
 1. ~~Cowork 예약 작업이 이 저장소 폴더를 읽고 쓰고 `leo` CLI를 실행할 수 있는가.~~ 해결: 읽기·쓰기는 되고 CLI는 안 된다. `kloe` 실행은 launchd가 맡고, 에이전트는 `work/` 파일만 다룬다 (결정 16).
-2. 예약 작업에서 모델을 지정하는 방식. Cowork 설정에서 Haiku를 고르는 것으로 정함 (결정 17). 서브에이전트 모델 지정은 미확인.
-3. 실행당 처리 가능한 배치 수와 구독 한도 소모 (Phase 2 첫 주에 측정).
+2. ~~예약 작업에서 모델을 지정하는 방식.~~ 해결: Cowork는 설정에서 Haiku를 고르고(결정 17), `kloe agent`는 `claude -p --model`로 지정한다 (결정 18). 서브에이전트 모델 지정은 미확인.
+3. 실행당 처리 가능한 배치 수와 구독 한도 소모 (Phase 2 첫 주에 측정). 첫 수치: `kloe agent` Haiku로 20건짜리 배치 하나에 약 40초 (`--parallel 2`, 배치 2개 시험). 구독 한도 소모는 미측정.
 4. 조세지출예산서가 기계 판독 가능한 형식인가.
 5. 신고보상 제도를 종합한 공식 목록이 있는가.
 6. 법제처 Open API의 연혁 조문 범위와 호출 한도.

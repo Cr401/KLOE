@@ -1,10 +1,10 @@
 ---
 name: kloe-classify
 description: KLOE L1 분류. work/queue/classify 의 배치 하나를 가져와 조문마다 혜택 조항인지 판정하고 work/out/classify 에 결과를 쓴다.
-version: 0.1
+version: 0.2
 ---
 
-# kloe-classify v0.1
+# kloe-classify v0.2
 
 너는 KLOE 파이프라인의 L1 분류 단계다. 조문 하나씩 보고 **경제적 혜택을 주는 조항인지**만 판정한다.
 DB나 다른 파일은 건드리지 않는다. 배치 파일에 없는 정보를 지어내지 않는다.
@@ -37,6 +37,7 @@ DB나 다른 파일은 건드리지 않는다. 배치 파일에 없는 정보를
 | reward | 신고·제보 보상금·포상금 | "포상금을 지급", "보상금을 지급" |
 
 - 시행령·시행규칙 조문이 법률의 혜택 대상 범위, 공제율, 한도를 정하면 `true` 다. 예: "법 제16조제1항에서 \"대통령령으로 정하는 …\"이란 …".
+- 하위 법령에 **위임만 하는 항**이라도, 위임하는 사항에 혜택의 계산·한도·요건·대상·신청(예: "공제세액의 계산", "감면의 요건", "과세특례의 신청")이 들어 있으면 `true` 다. `benefit_type` 은 그 사항이 가리키는 혜택(공제·감면 등)으로 고른다. 혜택과 무관한 사항만 위임하면(예: "조세지출예산서의 작성방법") `false` 다.
 - `false`: 정의만 하는 조문(혜택과 무관), 절차·신청서·서식, 벌칙·가산세, 의무만 정하는 조문, **사후관리·추징·환수**(혜택을 되돌리는 조항), 다른 조문을 단순히 적용 배제하는 조문, `삭제` 조문.
 - 적용기한(일몰)이 지났거나 "…까지 적용한다" 같은 기한이 붙은 특례도 혜택 내용이면 `true` 다. 기한·날짜가 지났는지는 판단하지 않는다(추출 단계에서 기록하고 코드가 검증한다).
 - 애매하면 `true` 로 두고 `reason` 에 이유를 쓴다. 놓치는 것보다 다음 단계에서 걸러지는 게 낫다.
@@ -45,11 +46,11 @@ DB나 다른 파일은 건드리지 않는다. 배치 파일에 없는 정보를
 ## 결과 한 줄의 형식
 
 ```json
-{"job_id": "classify:84213:3f9a1c2b4d5e", "extractor": "cowork:haiku:kloe-classify@0.1", "is_benefit": true, "benefit_type": "deduction", "reason": "출자금액의 일정 비율을 종합소득금액에서 공제", "quotes": [{"field": "is_benefit", "quote": "종합소득금액에서 공제"}]}
+{"job_id": "classify:84213:3f9a1c2b4d5e", "extractor": "cowork:haiku:kloe-classify@0.2", "is_benefit": true, "benefit_type": "deduction", "reason": "출자금액의 일정 비율을 종합소득금액에서 공제", "quotes": [{"field": "is_benefit", "quote": "종합소득금액에서 공제"}]}
 ```
 
 - `job_id`: 입력 줄의 값을 그대로 복사한다.
-- `extractor`: `cowork:<모델>:kloe-classify@0.1`. `<모델>`은 지금 너를 돌리는 모델의 짧은 이름(`haiku`, `sonnet`, `opus`)이다. 실행기가 extractor 값을 정해 주면 그 값을 그대로 쓴다.
+- `extractor`: `cowork:<모델>:kloe-classify@0.2`. `<모델>`은 지금 너를 돌리는 모델의 짧은 이름(`haiku`, `sonnet`, `opus`)이다. 실행기가 extractor 값을 정해 주면 그 값을 그대로 쓴다.
 - `is_benefit`: true / false.
 - `benefit_type`: `is_benefit` 이 true 면 위 표의 값 하나, false 면 `null`.
 - `reason`: 한 문장.

@@ -51,7 +51,7 @@ def test_runs_all_batches_and_ingests(tmp_path):
     ready = qi.ready_batches(work, "classify")
     assert len(ready) == 4
     rep = qi.ingest_batch(work, "classify", ready[0])
-    assert rep.ok and rep.extractor == "cc:haiku:kloe-classify@0.1"
+    assert rep.ok and rep.extractor == "cc:haiku:kloe-classify@0.2"
 
 
 def test_max_batches(tmp_path):

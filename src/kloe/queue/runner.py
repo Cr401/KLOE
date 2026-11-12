@@ -21,7 +21,7 @@ from kloe.queue.ingest import claim
 
 REPO = Path(__file__).resolve().parents[3]
 SKILLS = {"classify": "kloe-classify"}
-SKILL_VERSION = {"classify": "0.1"}
+SKILL_VERSION = {"classify": "0.2"}  # skills/kloe-classify/SKILL.md 의 version과 같아야 한다 (test_skills)
 
 CommandBuilder = Callable[[str, str], Sequence[str]]  # (prompt, model) -> argv
 
