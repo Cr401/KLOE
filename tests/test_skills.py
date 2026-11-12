@@ -28,3 +28,36 @@ def test_classify_example_matches_schema():
     table = set(re.findall(r"^\| (\w+) \| ", md, flags=re.M)) - {"benefit_type"}
     allowed = set(ClassifyResult.model_fields["benefit_type"].annotation.__args__[0].__args__)
     assert table == allowed
+
+
+def test_extract_examples_match_schema_and_verify():
+    from kloe.schema import ExtractResult
+    from kloe.verify import verify
+
+    md = (SKILLS / "kloe-extract" / "SKILL.md").read_text(encoding="utf-8")
+    examples = _json_blocks(md)
+    assert len(examples) == 3
+    version = re.search(r"^version: (\S+)$", md, flags=re.M).group(1)
+    for ex in examples:
+        r = ExtractResult.model_validate(ex)
+        assert ex["extractor"].endswith(f"kloe-extract@{version}")
+        # 예시 인용을 모두 담은 가짜 원문으로 검증이 통과해야 한다
+        text = " ".join(q.quote for q in r.fact.quotes) + " " + (r.fact.parent_ref or "")
+        assert verify(r, {"text": text, "effective_from": "2020-01-01"}) == []
+    assert {e["fact"].get("role") for e in examples} == {"benefit", "condition", "none"}
+    table = set(re.findall(r"^\| (\w+) \| ", md, flags=re.M)) - {"benefit_type", "role", "benefit", "condition", "none"}
+    allowed = set(ClassifyResult.model_fields["benefit_type"].annotation.__args__[0].__args__)
+    assert table == allowed
+
+
+def test_role_rules():
+    import pytest
+    from kloe.schema import FactPayload
+
+    with pytest.raises(ValueError):
+        FactPayload.model_validate({"is_benefit": True, "role": "none", "not_benefit_reason": "x", "benefit_type": "credit", "quotes": [{"field": "a", "quote": "b"}]})
+    with pytest.raises(ValueError):
+        FactPayload.model_validate({"is_benefit": False, "role": "none"})
+    with pytest.raises(ValueError):
+        FactPayload.model_validate({"is_benefit": False, "role": "condition"})
+    FactPayload.model_validate({"is_benefit": False, "role": "none", "not_benefit_reason": "위임만"})

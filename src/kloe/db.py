@@ -11,7 +11,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from kloe.link.delegation import DelegationLink
-from kloe.models import ParsedLaw
+from kloe.models import ParsedLaw, ProgramRecord
 from kloe.queue.ingest import IngestReport
 
 DEFAULT_URL = "postgresql://kloe:kloe@localhost:5432/kloe"
@@ -145,6 +145,78 @@ def provisions_as_of(conn, law_id: str, as_of: date) -> list[dict]:
     ))
 
 
+# ---------- 공고 (지원사업·장학금·창업) ----------
+
+def store_programs(conn, records: list[ProgramRecord], *, file_path: str, sha256: str) -> tuple[int, int]:
+    """공고를 넣거나 갱신한다. 본문이 바뀌면 새 판을 만들고 이전 판과 그 fact를 stale로 돌린다.
+    (새 공고 수, 새 판 수)를 돌려준다."""
+    new_programs = new_versions = 0
+    for r in records:
+        row = conn.execute(
+            """insert into program (source, external_id, title, agency, category, url, apply_start, apply_end)
+               values (%s, %s, %s, %s, %s, %s, %s, %s)
+               on conflict (source, external_id) do update set
+                 title = excluded.title, agency = excluded.agency, category = excluded.category, url = excluded.url,
+                 apply_start = excluded.apply_start, apply_end = excluded.apply_end, last_seen = now()
+               returning id, (xmax = 0) as inserted""",
+            (r.source, r.external_id, r.title, r.agency, r.category, r.url, r.apply_start, r.apply_end),
+        ).fetchone()
+        pid = row["id"]
+        new_programs += row["inserted"]
+        current = conn.execute(
+            "select id, text_hash from program_version where program_id = %s and superseded_at is null", (pid,)
+        ).fetchone()
+        if current and current["text_hash"] == r.text_hash:
+            continue
+        if current:
+            conn.execute("update program_version set superseded_at = now() where id = %s", (current["id"],))
+            conn.execute("update program_fact set status = 'stale' where version_id = %s and status <> 'rejected'",
+                         (current["id"],))
+        old = conn.execute(
+            "select id from program_version where program_id = %s and text_hash = %s", (pid, r.text_hash)
+        ).fetchone()
+        if old:  # 예전 본문으로 되돌아옴: 그 판을 다시 현행으로
+            conn.execute("update program_version set superseded_at = null where id = %s", (old["id"],))
+            conn.execute("update program_fact set status = 'verified' where version_id = %s and status = 'stale'",
+                         (old["id"],))
+            continue
+        conn.execute(
+            """insert into program_version (program_id, text, text_hash, file_path, sha256)
+               values (%s, %s, %s, %s, %s)""",
+            (pid, r.text, r.text_hash, file_path, sha256),
+        )
+        new_versions += 1
+    return new_programs, new_versions
+
+
+def export_program_candidates(conn, limit: int, exclude: set[int], today: date | None = None) -> list[dict]:
+    """현행 판 중 마감이 안 지났고(마감 미상 포함) 추출 fact가 없는 것."""
+    rows = conn.execute(
+        """select v.id as version_id, v.text, v.text_hash, p.source, p.title, p.apply_end
+           from program_version v join program p on p.id = v.program_id
+           where v.superseded_at is null
+             and (p.apply_end is null or p.apply_end >= %s)
+             and not exists (select 1 from program_fact f where f.version_id = v.id and f.status <> 'rejected')
+           order by v.id""",
+        (today or date.today(),),
+    )
+    return [r for r in rows if r["version_id"] not in exclude][:limit]
+
+
+def open_programs(conn, today: date | None = None) -> list[dict]:
+    """마감 전 공고와 추출 결과 (kloe programs)."""
+    return list(conn.execute(
+        """select p.source, p.external_id, p.title, p.agency, p.apply_end, p.url, f.payload
+           from program p
+           join program_version v on v.program_id = p.id and v.superseded_at is null
+           left join lateral (select payload from program_fact pf where pf.version_id = v.id and pf.status = 'verified'
+                              order by pf.id desc limit 1) f on true
+           where p.apply_end is null or p.apply_end >= %s
+           order by p.apply_end nulls last, p.id""",
+        (today or date.today(),),
+    ))
+
+
 # ---------- 배치 ----------
 
 def export_candidates(conn, stage: str, limit: int, exclude: set[int], recheck: str | None = None) -> list[dict]:
@@ -210,6 +282,14 @@ def store_report(conn, report: IngestReport) -> int:
     batch_id = b["id"] if b else record_batch(conn, report.stage, report.batch)
     n = 0
     for job, result in report.accepted:
+        if report.stage == "program":
+            cur = conn.execute(
+                """insert into program_fact (version_id, batch_id, payload, status, extractor)
+                   values (%s, %s, %s, 'verified', %s) on conflict (version_id, extractor) do nothing""",
+                (job["version_id"], batch_id, Jsonb(result.fact.model_dump(mode="json")), result.extractor),
+            )
+            n += cur.rowcount
+            continue
         if report.stage == "classify":
             payload = {"stage": "classify", **result.model_dump(mode="json", exclude={"job_id", "extractor"})}
             is_benefit = result.is_benefit

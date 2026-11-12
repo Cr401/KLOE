@@ -99,6 +99,62 @@ def qx_first_job(work):
     raise AssertionError("16-1 job 없음")
 
 
+class _Pages:
+    """FakeFetch: 부를 때마다 다음 fixture를 준다."""
+
+    def __init__(self, *names):
+        self.names = list(names)
+
+    def __call__(self, url):
+        return (FIX / self.names.pop(0)).read_bytes()
+
+
+def test_programs_end_to_end(conn, tmp_path, monkeypatch):
+    import json
+
+    from kloe.collect.programs import ProgramApiClient
+
+    work, raw = tmp_path / "work", tmp_path / "raw"
+    cli.load_files(conn, [FIX / "law_v1.xml"])  # 근거법령 연결 확인용 (테스트특례법)
+
+    client = ProgramApiClient(key="k", fetch=_Pages("programs_gov24_p1.json", "programs_gov24_p2.json"))
+    monkeypatch.setitem(__import__("kloe.collect.programs", fromlist=["SOURCES"]).SOURCES["gov24"], "per_page", 2)
+    assert cli.fetch_programs(conn, raw, ["gov24"], client=client) == (3, 3)
+    client = ProgramApiClient(key="k", fetch=_Pages("programs_kstartup_p1.json"))
+    assert cli.fetch_programs(conn, raw, ["kstartup"], client=client) == (1, 1)
+    client = ProgramApiClient(key="k", fetch=_Pages("programs_kstartup_p1.json"))
+    assert cli.fetch_programs(conn, raw, ["kstartup"], client=client) == (0, 0)  # 같은 본문은 새 판 없음
+
+    # 마감 지난 공고(2025년)는 내보내지 않는다
+    paths = cli.export_stage(conn, work, "program", limit=100, batch_size=10)
+    jobs = qi.read_jsonl(paths[0])
+    assert sorted(j["title"] for j in jobs) == ["2027년 테스트 예비창업패키지 모집", "테스트 대학생 장학금", "테스트 청년 월세 지원"]
+    assert cli.export_stage(conn, work, "program", 100, 10) == []  # 이미 나간 것은 다시 안 나감
+
+    qi.claim(work, "program", paths[0].name)
+    run_agent(work, "program", paths[0].name)
+    [rep] = cli.ingest_stage(conn, work, "program")
+    assert rep.ok
+    assert conn.execute("select count(*) as n from program_fact where status = 'verified'").fetchone()["n"] == 3
+    assert cli.export_stage(conn, work, "program", 100, 10) == []
+    assert len(db.open_programs(conn)) == 3
+
+    basis = list(conn.execute("select basis, law_id from program_law_basis"))
+    assert sorted((b["basis"], b["law_id"]) for b in basis) == [
+        ("테스트주거지원법(제21조, 제0항)", None),  # 아직 안 모은 법령
+        ("테스트특례법(제16조, 제1항)", "999001"),
+    ]
+
+    # 본문이 바뀌면 새 판 + 이전 fact stale + 다시 내보내기
+    changed = json.loads((FIX / "programs_kstartup_p1.json").read_text(encoding="utf-8"))
+    changed["data"][0]["pbanc_ctnt"] = "예비창업자에게 사업화 자금을 최대 1억5천만원까지 지원합니다."
+    client = ProgramApiClient(key="k", fetch=lambda url: json.dumps(changed, ensure_ascii=False).encode())
+    assert cli.fetch_programs(conn, raw, ["kstartup"], client=client) == (0, 1)
+    assert conn.execute("select count(*) as n from program_fact where status = 'stale'").fetchone()["n"] == 1
+    again = cli.export_stage(conn, work, "program", 100, 10)
+    assert [j["title"] for j in qi.read_jsonl(again[0])] == ["2027년 테스트 예비창업패키지 모집"]
+
+
 def test_recheck_exports_false_delegations_next_to_true(conn, tmp_path):
     work = tmp_path / "work"
     cli.load_files(conn, [FIX / "law_v1.xml", FIX / "decree_v1.xml"])

@@ -5,7 +5,8 @@ import re
 
 from kloe.queue.export import read_jsonl, stage_dir
 
-EXTRACTORS = {"classify": "cowork:test:kloe-classify@0.0", "extract": "cowork:test:kloe-extract@0.0"}
+EXTRACTORS = {"classify": "cowork:test:kloe-classify@0.0", "extract": "cowork:test:kloe-extract@0.0",
+              "program": "cc:test:kloe-extract-program@0.0"}
 
 
 def fake_result(stage: str, job: dict) -> dict:
@@ -16,6 +17,12 @@ def fake_result(stage: str, job: dict) -> dict:
         return {"job_id": job["job_id"], "extractor": EXTRACTORS[stage], "is_benefit": benefit,
                 "benefit_type": "deduction" if benefit else None,
                 "quotes": [{"field": "is_benefit", "quote": first_sentence}]}
+    if stage == "program":
+        first_line = text.splitlines()[0]
+        basis = [b for line in re.findall(r"^근거법령: (.+)$", text, flags=re.M) for b in line.split("||")]
+        return {"job_id": job["job_id"], "extractor": EXTRACTORS[stage],
+                "fact": {"is_benefit": True, "benefit_type": "subsidy", "legal_basis": basis,
+                         "quotes": [{"field": "summary", "quote": first_line}]}}
     m = re.search(r"100분의 (\d+)", text)
     fact = {"is_benefit": benefit, "benefit_type": "deduction" if benefit else None,
             "quotes": [{"field": "trigger", "quote": first_sentence}]}

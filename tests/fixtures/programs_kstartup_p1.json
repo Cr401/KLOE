@@ -1,0 +1,38 @@
+{
+ "_note": "테스트용 합성 응답. 실제 공고가 아니다. 필드 이름과 모양은 2026-11-12 실제 응답을 따랐다.",
+ "page": 1,
+ "perPage": 10,
+ "currentCount": 1,
+ "totalCount": 30577,
+ "matchCount": 1,
+ "data": [
+  {
+   "pbanc_sn": 990001,
+   "biz_pbanc_nm": "2027년 테스트 예비창업패키지 모집",
+   "pbanc_ntrp_nm": "테스트창업진흥원",
+   "supt_biz_clsfc": "사업화",
+   "pbanc_ctnt": "예비창업자에게 사업화 자금을 최대 1억원까지 지원합니다.",
+   "aply_trgt": "예비창업자",
+   "aply_trgt_ctnt": "공고일 기준 사업자 등록이 없는 사람",
+   "biz_enyy": "예비창업자",
+   "biz_trgt_age": "만 20세 이상",
+   "supt_regin": "전국",
+   "pbanc_rcpt_bgng_dt": "20270201",
+   "pbanc_rcpt_end_dt": "20270228",
+   "rcrt_prgs_yn": "Y",
+   "detl_pg_url": "https://example.invalid/kstartup/view.do?schM=view&amp;pbancSn=990001",
+   "intg_pbanc_biz_nm": "2027년 테스트 예비창업패키지&amp;#40;1차&amp;#41;",
+   "intg_pbanc_yn": "N",
+   "biz_prch_dprt_nm": "테스트사업부",
+   "sprv_inst": "공공기관",
+   "prfn_matr": null,
+   "aply_excl_trgt_ctnt": null,
+   "aply_mthd_onli_rcpt_istc": "https://example.invalid/apply",
+   "aply_mthd_vst_rcpt_istc": null,
+   "biz_aply_url": null,
+   "biz_gdnc_url": "example.invalid/guide",
+   "prch_cnpl_no": "0000000000",
+   "id": 1
+  }
+ ]
+}

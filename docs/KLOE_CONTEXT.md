@@ -44,8 +44,12 @@
 | 15 | 첫 수집 범위는 조세 법령. 단, 보상 조항은 처음부터 전체 법령에 키워드 필터를 돌림 | 조세는 조세지출예산서라는 정답 셋이 있어서 재현율을 잴 수 있음. 보상 조항은 여러 법에 흩어져 있고 키워드 필터는 비용이 거의 없음 |
 | 16 | `kloe` 실행(수집·가져오기·내보내기)은 Mac의 launchd가 맡고, Cowork 예약 작업은 `work/` 파일만 다룬다 (12절 열린 질문 1의 대안 확정) | 2026-11-09 시험: Cowork 셸은 Mac 위 Linux VM이라 macOS용 `.venv`의 `kloe`를 실행하지 못함. KLOE 폴더 읽기·쓰기는 됨 |
 | 17 | L1 예약 작업은 Haiku, effort medium으로 돌린다 | 사용자 결정 (2026-11-09). 시험 작업은 기본값 Opus로 돌았음 |
-| 18 | L1의 기본 실행 수단을 Mac의 Claude Code 헤드리스(`kloe agent`, `claude -p`)로 두고, Cowork 예약 작업은 예비로 남긴다 | PR #6. 잠금·rename을 코드가 하고 에이전트에는 Read·Write만 주므로, 에이전트가 절차를 틀릴 여지가 줄어든다. 구독 로그인으로 돈다 |
-| 19 | classify는 애매하면 `true`로 두고, 걸러내는 일은 추출·분석 단계에 맡긴다. 혜택의 계산·한도·요건·신청을 하위 법령에 위임만 하는 항도 `true` (skill 0.2) | 사용자 결정 (2026-11-12). `false`로 빠진 조문은 다음 단계로 가지 않아 되살릴 수 없지만, `true`로 잘못 간 것은 뒤에서 걸러진다. 0.1 결과 검토에서 이런 위임 항 180건이 `false`로 빠진 것을 찾았고, `kloe export --stage classify --recheck`로 다시 분류한다 |
+| 18 | 범위를 법령 밖 **지원사업·장학금·창업 공고**로 넓힌다. 첫 소스는 보조금24(정부24 공공서비스, data.go.kr 15113968)와 K-Startup 사업공고(15125364). 기업마당·한국장학재단 CSV는 다음 | 사용자 결정 (2026-11-11). 두 API가 공공데이터포털 키 하나로 되고, 개인 혜택과 창업 공고를 함께 다룸 |
+| 19 | 공고는 조문 표(`provision`)에 넣지 않고 `program`·`program_version`·`program_fact`로 따로 둔다. 분류 단계 없이 `program` 단계(`kloe-extract-program`)로 바로 추출하고, 배치 핸드오프와 인용 검증은 그대로 쓴다. 근거법령은 `program_law_basis` 뷰로 모은 법령과 잇는다 | 공고에는 조·항, 시행일, 위임이 없고 대부분 혜택이라 분류가 필요 없음. 본문은 필드를 "이름: 값" 줄로 이은 것이라 인용 검증을 그대로 할 수 있음 |
+| 20 | L1 기본 실행은 Mac의 **Claude Code 헤드리스**(`kloe agent` → `claude -p`, Haiku, effort medium)로 한다. Cowork 예약 작업은 예비 | 사용자 결정 (2026-11-09). VM·승인 대기 문제가 없고 병렬로 빠름. 구독 로그인을 그대로 씀. 잠금과 rename은 실행기가 하고 에이전트에게는 Read·Write 도구만 준다 |
+| 21 | 분류는 **애매하면 true**로 넘기고, 거르기는 추출 단계에서 한다. 추출은 조문마다 `role`(`benefit`·`condition`·`none`)을 다시 가른다. 일몰된 특례도 분류에서는 true, 기한은 추출에서 기록하고 코드가 검증한다 | 사용자 결정 (2026-11-09, 2026-11-12). 분류에서 false로 빠진 조문은 뒤에서 되살릴 수 없으므로 재현율을 우선함 |
+| 22 | `extractor`는 `<실행 환경>:<모델>:<skill>@<버전>`. 실행 환경은 `cowork`(Cowork) 또는 `cc`(Claude Code 헤드리스) | 같은 skill이라도 실행 환경별 결과를 나눠 비교하기 위함 |
+| 23 | `kloe-classify` 0.2: 혜택의 계산·한도·요건·대상·신청을 하위 법령에 위임만 하는 항도 true. 0.1에서 false로 빠진 이런 항(같은 조의 다른 항이 true인 것, 180건)은 `kloe export --stage classify --recheck`로 다시 분류한다. 0.1 결과는 지우지 않고 0.2 결과를 더한다 | 사용자 결정 (2026-11-12, 결정 21의 적용). 0.1에서 이런 항이 false 180건·true 91건으로 갈렸다. 주의: `kloe-extract` 0.1은 위임만 하는 항을 `role=none`으로 보내므로, 추출 결과에 차이가 나려면 그 규칙도 바꿔야 한다 |
 
 ## 검토했다가 버린 대안
 
@@ -78,7 +82,7 @@
 4. 신고보상 제도를 종합한 공식 목록이 있는가 → **미확인** (찾지 못함)
 5. 법제처 Open API의 연혁 조문 범위, 호출 한도, OC 키 발급 절차 → **일부 확인** (OC와 호출 기기 IP 등록 필요, Mac에서 인증 통과. 호출 한도·연혁 조회 방법은 미확인)
 6. Cowork 예약 작업이 로컬 폴더를 읽고 쓰고 CLI를 실행할 수 있는가 → **확인 (2026-11-09).** 읽기·쓰기는 됨, `kloe` 실행은 안 됨 (결정 16)
-7. 예약 작업에서 모델을 지정하는 방식 (안 되면 작업 안에서 서브에이전트 모델을 지정) → **일부 확인.** 지정하지 않으면 Opus로 돎. 사용자가 Cowork 설정에서 Haiku로 고를 수 있다고 봄 (결정 17). 서브에이전트 모델 지정은 미확인
+7. 예약 작업에서 모델을 지정하는 방식 → **확인.** Cowork는 지정하지 않으면 Opus로 돎, 설정에서 Haiku를 고른다 (결정 17). 헤드리스는 `--model`로 지정 (결정 20)
 8. 최저한세, 소득공제 종합한도, 농어촌특별세가 개별 혜택에 걸리는지 (명목값만 다루더라도 `obligations`·`exclusions`에 기록할 대상)
 
 ## Phase 0 확인 메모 (2026-11-04, 1차)
@@ -130,15 +134,32 @@ Mac(`/Users/chris/KLOE`)에서 OC 키로 실제 API를 호출해 확인했다.
 - Claude 앱 Code 탭 예약 작업: 권한 모드를 물려받지 않아 첫 셸 명령에서 승인 대기로 멈춘다. 무인 실행하려면 승인을 작업에 저장하거나 권한 모드를 바꿔야 한다.
 - Cowork 예약 작업: Mac 위 Linux VM(aarch64)에서 돌고 KLOE 폴더만 마운트된다. `work/queue` 읽기와 `work/` 쓰기는 됐다. macOS용 `.venv`의 `kloe`는 `bad interpreter`로 실행되지 않는다. VM 시계는 Europe/Berlin 기준이었으므로, 파일 이름·기록의 시각은 UTC로 통일한다.
 - 모델: 따로 고르지 않으면 Opus(`claude-opus-5-5`)로 돌았다.
-- Cowork가 쓴 파일은 Mac의 같은 폴더에 그대로 보인다 (같은 폴더가 마운트됨). VM에서 Mac의 Postgres에 붙을 수 있는지는 미확인이다 (붙을 필요는 없음). VM 마운트를 거친 rename은 실제로 돌려 보니 문제가 없었다: 2026-11-12까지 Cowork가 classify 배치 247개를 처리했고 실패나 중복 처리는 0건이다. 다만 동시에 여러 작업이 같은 파일을 잡는 경우는 시험하지 않았다.
+- Cowork가 쓴 파일은 Mac의 같은 폴더에 그대로 보인다 (같은 폴더가 마운트됨). VM 마운트를 거친 rename 잠금은 2026-11-09 첫 classify 배치에서 정상 동작을 확인했다 (아래 Phase 2 메모).
+
+## Phase 2 확인 메모 (2026-11-09 ~ 2026-11-12)
+
+**매일 자동 실행 (launchd)**
+- `scripts/install_launchd.sh 3`으로 매일 03:00 `scripts/nightly.sh`를 돌린다. 로그는 `~/Library/Logs/kloe/nightly.log`. OC 키는 실행할 때 `~/.zshrc`에서 값만 읽는다 (키 파일 없음).
+- Mac 원격 세션은 다른 세션이 전한 launchd 설치·`claude -p` 실행 지시를 권한 설정 때문에 막는다. 이런 명령은 사용자가 Mac 터미널에서 직접 실행한다.
+
+**분류 (classify) 결과**
+- 현행 조문 4,961건 전부 분류·검증 통과 (실패 0). true 2,414 / false 2,547.
+- true를 법령별로: 법률 852/1,872, 시행령 1,321/2,699, 시행규칙 241/390. 유형별: exemption 912, credit 467, nontaxable 456, deferral 288, deduction 244, subsidy 45, fee_waiver 2.
+- 실행: 첫 배치는 Cowork(Haiku), 대부분은 Cowork 쪽 Haiku 작업, 40건은 `kloe agent` 헤드리스 시험(병렬 2, 배치 20건당 약 40초).
+- 샘플 검토 (true 50, false 15, `reports/classify-sample-2026-11-12.md`): true의 대부분은 혜택의 범위·요건·계산·한도를 정하는 시행령·시행규칙 조문이다. 판정이 흔들린 유형은 위임만 하는 조문(true·false가 섞임), 가산세·추징 크기를 정하는 조문 일부, 절차 조문 일부다. 가산세·추징·절차 쪽은 결정 21에 따라 분류 기준을 그대로 두고 추출의 `role=none`으로 거른다. 위임만 하는 조문은 skill 0.2에서 true로 정리하고, 0.1에서 false로 빠진 180건을 `--recheck`로 다시 분류한다 (결정 23). 하위 조문은 따로 분류되므로 내용 자체는 0.1에서도 잃지 않았다.
+
+**헤드리스 실행 (`kloe agent`)**
+- Claude Code CLI 2.1.x 옵션 확인: `--model`, `--effort`, `--tools`, `--allowedTools`, `--permission-mode dontAsk`, `--no-session-persistence`. `--max-turns`는 없다. `--bare`는 구독 로그인을 읽지 않으므로 쓰지 않는다.
+- nvm으로 설치한 `claude`는 네이티브 바이너리 설치 스크립트가 안 돌면 실행되지 않는다. 다시 설치하고 `claude auth login`(구독)으로 로그인했다. launchd에서 돌릴 때는 `KLOE_CLAUDE_BIN`에 전체 경로를 준다.
 
 ## 현재 상태
 
-- 설계 v0.3. 아래 2부가 전문이다. 결정 16~19를 더했다.
-- 저장소: GitHub `Cr401/KLOE` (Mac의 `/Users/chris/KLOE`에 clone). DB: Mac Docker의 Postgres 16.
-- **Phase 1 완료.** 수집·정규화·위임 연결·배치 왕복·검증이 실제 조특법으로 동작한다. launchd가 매일 03:00에 `scripts/nightly.sh`를 돌린다. 남은 것: 연혁 수집, 부칙 파싱.
-- **Phase 2 진행 중 (classify).** 현행 조문 4,961건이 전부 분류됐다 (2026-11-12): `true` 2,414 · `false` 2,547, 전부 verified, 실패 배치 0. 대부분(4,921건)은 Cowork 예약 작업(`cowork:haiku:kloe-classify@0.1`), 40건은 `kloe agent` 시험(`cc:haiku:kloe-classify@0.1`)이다. 샘플 검토: `reports/classify-sample-2026-11-12.md`.
-- skill은 `skills/kloe-classify/SKILL.md` 0.2다 (결정 19). 0.1에서 `false`로 빠진 위임 항 180건을 `--recheck`로 다시 분류해야 한다. 그다음은 `kloe-extract` skill과 extract 단계다.
+- 설계 v0.3. 아래 2부가 전문이다. 결정 16~23을 더했다.
+- 저장소: GitHub `Cr401/KLOE` (Mac의 `/Users/chris/KLOE`에 clone). DB: Mac Docker의 Postgres 16. 매일 03:00 launchd가 수집·가져오기·내보내기를 돈다.
+- **Phase 1 대부분 완료.** 남은 것: 연혁 수집, 부칙 파싱.
+- **Phase 2 진행 중.** 분류는 현행 조문 4,961건을 마쳤다 (true 2,414). skill 0.2로 위임 항 180건 재분류가 남았다 (`--recheck`, 결정 23). 추출 skill `kloe-extract` v0.1과 `kloe agent --stage extract`를 만들었고, 2,414건 추출을 돌릴 차례다.
+- 공고(보조금24, K-Startup) 수집과 `kloe-extract-program` 추출이 붙었다 (결정 18, 19).
+- 다른 작업에서 만든 보고서 `reports/benefits-report-2026-11-12.*`, `reports/benefits-by-target-2026-11-12.*`(Mac, 커밋 안 함)는 검증 파이프라인 밖에서 만든 참고 자료다. DB의 fact는 추출 큐를 거친 것만 쓴다.
 - Phase 0 정답 셋은 사용자 몫으로 진행 중이다. `data/golden/reward_programs.csv`는 10개 제도 초안, `data/golden/tax_expenditure_2027.csv`는 헤더만 있다.
 
 ## 다음 할 일: Phase 0 체크리스트
@@ -167,7 +188,7 @@ Mac(`/Users/chris/KLOE`)에서 OC 키로 실제 API를 호출해 확인했다.
 | 사용자 | 본인 1명. 사업화·세무사법 이슈는 고려하지 않음 |
 | 목표 | 한국 법령에서 경제적 이익이 되는 조항을 자동으로 발굴·구조화하고, 상위 모델과 사람이 기회로 엮어 **매주 보고서**로 남김 |
 | 트랙 | **A 기회 카탈로그 + B 제도 허점**을 동시에. 보상금 제도는 A의 `reward` 유형으로 발굴 |
-| LLM 실행 | **API를 쓰지 않음.** Max 구독 안에서, 앱이 제공하는 기능(Cowork·예약 작업·서브에이전트)으로만 실행 |
+| LLM 실행 | **API를 쓰지 않음.** Max 구독 안에서, 앱이 제공하는 기능(Claude Code 헤드리스·Cowork·예약 작업·서브에이전트)으로만 실행 |
 | 저장소 | 로컬 PostgreSQL + 원본 파일은 로컬 디스크. **DB에는 코드만 쓴다** |
 | 범위 밖 | 트랙 C(특정 주체의 부정수급 탐지), 세액 계산기, 개인 프로필 기반 적격 판정 |
 
@@ -183,7 +204,7 @@ L0  코드 (LLM 없음)          수집 → 정규화 → 위임 연결(정규�
                               ← 결과 파일 가져오기 → 기계 검증 → gap SQL → 변경 피드
          │ queue/*.jsonl                         ▲ out/*.jsonl
          ▼                                       │
-L1  Cowork 예약 작업 (하위 모델)   조문 단위: 분류 → fact 추출
+L1  kloe agent → claude -p (하위 모델)   조문 단위: 분류 → fact 추출
          │
          ▼  verified facts
 L2  상위 모델 (주 1회)       fact 여러 개 → opportunity 합성, gap 의미 판정, 사업화 신호, 순위
@@ -197,8 +218,8 @@ L4  주간 보고서              reports/YYYY-Www.md
 
 | 계층 | 실행 수단 | 모델 | 단위 | 산출물 |
 |---|---|---|---|---|
-| L0 | `leo` CLI, launchd 매일 실행 | 없음 | 법령·조문 | DB 행, 배치 파일, 변경 이벤트 |
-| L1 | Mac의 `kloe agent`(Claude Code 헤드리스), 예비로 Cowork 예약 작업 (결정 18) | 분류: Haiku / 추출: Sonnet (Haiku 비교 실험) | 조문 1개 | `fact` |
+| L0 | `kloe` CLI, launchd 매일 03:00 | 없음 | 법령·조문 | DB 행, 배치 파일, 변경 이벤트 |
+| L1 | `kloe agent` (Mac 헤드리스, 결정 20). 예비로 Cowork 예약 작업 | 분류·추출 모두 Haiku, effort medium (결정 17). Sonnet 비교는 나중에 | 조문 1개 | `fact` |
 | L2 | Cowork 예약 작업 (주 1회) 또는 직접 실행 | Opus | 위임 체인으로 묶인 fact 묶음 | `opportunity`, `gap` 판정, 순위 근거 |
 | L3 | Cowork 대화 | Opus | 자유 | `idea`, `review` |
 | L4 | Cowork 예약 작업 (주 1회) | Opus | 한 주 | 보고서 Markdown |
@@ -228,7 +249,7 @@ work/
 장점:
 - 에이전트가 검증을 우회할 수 없다.
 - 에이전트 실행 환경이 로컬 Postgres에 접속할 수 있는지 신경 쓸 필요가 없다.
-- 중간에 끊겨도 `claimed`에 오래 머무른 파일을 `queue`로 되돌리면 된다 (`leo requeue --stale 6h`).
+- 중간에 끊겨도 `claimed`에 오래 머무른 파일을 `queue`로 되돌리면 된다 (`kloe requeue --stale 6h`, 매일 nightly 앞에 돈다).
 - 배치 파일 자체가 재현용 기록이 된다.
 
 배치 한 줄의 형태:
@@ -239,7 +260,9 @@ work/
  "text": "…조문 원문…", "delegations": [{"phrase": "대통령령으로 정하는 …", "target_text": "…"}]}
 ```
 
-결과 한 줄은 skill이 정한 JSON 스키마를 따르고, 반드시 `job_id`와 `extractor`(`cowork:<모델>:<skill 버전>`)를 담는다.
+결과 한 줄은 skill이 정한 JSON 스키마를 따르고, 반드시 `job_id`와 `extractor`(`<cowork|cc>:<모델>:<skill>@<버전>`, 결정 22)를 담는다.
+
+`kloe agent`로 돌릴 때는 실행기가 `queue → claimed` rename과 `touch`, `.tmp → out` rename을 하고, 에이전트는 배치를 읽고 `.tmp` 하나를 쓰기만 한다. 실패한 배치(종료 코드 오류, 결과 없음, 줄 수 불일치, 시간 초과)는 queue로 돌아간다.
 
 ## 2. 일정
 
@@ -257,7 +280,9 @@ work/
 
 | 필드 | 내용 |
 |---|---|
-| `is_benefit` | 혜택 조항인가 (분류 단계) |
+| `is_benefit` | 혜택 조항인가 (분류 단계는 애매하면 true, 추출 단계에서 다시 판정) |
+| `role` | 추출 단계: `benefit`(혜택 본문) · `condition`(다른 조문 혜택의 범위·요건·계산·한도) · `none`(위임만, 가산세·추징, 절차, 배제). none이면 is_benefit=false |
+| `parent_ref` / `not_benefit_reason` | condition이면 본문에 적힌 상위 조문 표기 그대로 / none이면 이유 |
 | `benefit_type` | `deduction`, `credit`, `exemption`, `nontaxable`, `deferral`, `subsidy`, `loan`, `guarantee`, `fee_waiver`, `reward` |
 | `trigger_kind` / `trigger` | 혜택이 생기는 계기와 그 설명 (`invest`, `hire`, `relocate`, `hold`, `found`, `spend`, `report`, `participate`) |
 | `beneficiary` | 수혜 주체 |
@@ -422,21 +447,23 @@ opportunity는 덮어쓰지 않는다. 새 행을 만들고 이전 행의 `super
 - 모든 `quotes[].quote`가 조문 원문 안에 **글자 그대로** 있는가 (공백 정규화 후 부분 문자열).
 - 수치 필드가 인용문 안의 숫자와 일치하는가.
 - `time_window`가 조문 버전의 유효기간과 정합적인가.
+- 추출의 `parent_ref`가 조문 원문 안에 있는가. `role`과 `is_benefit`이 맞물리는가 (스키마).
 - L2 결과는 `fact_ids`가 모두 `verified` 상태인가.
 
 통과하면 `verified` 또는 `proposed`, 실패하면 줄 단위로 `failed`에 사유를 남긴다. 배치는 실패한 줄만 모아 한 번 다시 대기열에 넣는다.
 
 ## 6. Skills (에이전트 지시문, git 관리)
 
-예약 작업 프롬프트는 "skill X를 따라 배치 K개를 처리하라" 한 줄로 두고, 실제 지시는 skill 파일에 둔다. skill 버전이 곧 `extractor` 버전이다.
+실제 지시는 skill 파일(`skills/<이름>/SKILL.md`)에 두고, `kloe agent`나 예약 작업 프롬프트는 skill을 가리키기만 한다. skill 버전이 곧 `extractor` 버전이다. `tests/test_skills.py`가 skill 안의 결과 예시를 스키마와 검증에 통과시킨다.
 
 | skill | 계층 | 내용 |
 |---|---|---|
-| `leo-classify` | L1 | 혜택 조항 판정 기준, 유형 정의, 경계 사례 예시 |
-| `leo-extract` | L1 | 3.1 스키마, 인용 규칙, `uncertain` 사용 규칙 |
-| `leo-synthesize` | L2 | fact 묶기 규칙, substance·business_signal·time_signal 기준, G2·G5·G6 판정 기준, 순위 근거 작성법 |
-| `leo-explore` | L3 | 카탈로그 탐색 방법, 검토 판정과 아이디어를 기록하는 명령 |
-| `leo-weekly-report` | L4 | 보고서 템플릿과 작성 규칙 |
+| `kloe-classify` (v0.2, 있음) | L1 | 혜택 조항 판정 기준, 유형 정의, 경계 사례 예시 |
+| `kloe-extract` (v0.1, 있음) | L1 | role 판정, 3.1 스키마, 인용 규칙, `uncertain` 사용 규칙 |
+| `kloe-extract-program` (v0.1, 있음) | L1 | 공고 추출 (결정 19) |
+| `kloe-synthesize` (아직) | L2 | fact 묶기 규칙, substance·business_signal·time_signal 기준, G2·G5·G6 판정 기준, 순위 근거 작성법 |
+| `kloe-explore` (아직) | L3 | 카탈로그 탐색 방법, 검토 판정과 아이디어를 기록하는 명령 |
+| `kloe-weekly-report` (아직) | L4 | 보고서 템플릿과 작성 규칙 |
 
 공통 규칙: 배치 파일에 없는 정보를 지어내지 않는다, 판단 못 한 필드는 `uncertain`에 적는다, 부정수급·명의 위장·허위 증빙·실질과 다른 거래 설계는 기회로 만들지 않는다.
 
@@ -472,29 +499,32 @@ opportunity는 덮어쓰지 않는다. 새 행을 만들고 이전 행의 `super
 ## 9. 코드 구조
 
 ```text
-leo/
+KLOE/
   pyproject.toml
   docker-compose.yml          # postgres
-  migrations/0001_init.sql
+  migrations/                 # 0001_init.sql 등
+  config/laws.txt             # 수집할 법령 ID
   skills/                     # 6절 skill 파일
-  src/leo/
-    cli.py                    # nightly / export / ingest / requeue / review / idea / export weekly
+  scripts/                    # nightly.sh, install_launchd.sh, launchd/ 템플릿
+  src/kloe/
+    cli.py                    # migrate / fetch / load / link / export / ingest / requeue / agent / show / nightly / 공고 명령
     collect/law_api.py        # 법제처 Open API, 원본 저장
     normalize/parse.py        # XML → provision
     link/delegation.py        # 정규식 위임 연결
     queue/export.py           # 배치 파일 생성
     queue/ingest.py           # 결과 파일 가져오기 + 검증
+    queue/runner.py           # kloe agent: claude -p 헤드리스 실행기
     verify.py                 # 5절
-    schema.py                 # fact / opportunity / gap Pydantic 모델
-    gaps.py                   # G1, G3, G4 SQL + G2, G5 후보
-    feed.py                   # 변경 이벤트
-    eval.py                   # 8절 리포트
+    schema.py                 # fact / program Pydantic 모델
+    db.py                     # Postgres 적재
   work/                       # 파일 핸드오프 (gitignore)
   data/raw/                   # 원본 (gitignore)
   data/golden/                # 정답 셋 CSV
-  reports/                    # 주간 보고서
-  tests/fixtures/             # 고정 XML·배치 샘플
+  reports/                    # 보고서
+  tests/                      # fixtures/ (합성 XML + 실제 발췌), agent_sim.py (가짜 에이전트)
 ```
+
+아직 없는 것: `gaps.py`(G1·G3·G4 SQL), `feed.py`(변경 이벤트 피드), `eval.py`(8절 리포트), review·idea 명령.
 
 테스트 대상: 파서, 위임 연결 정규식, 인용 검증, 배치 내보내기/가져오기 왕복, `requeue`. LLM 계층은 고정된 결과 파일 샘플로 ingest 경로만 테스트한다.
 
@@ -503,12 +533,12 @@ leo/
 | Phase | 내용 | 완료 기준 |
 |---|---|---|
 | 0 | 정답 셋: 조세지출예산서 항목·근거 조문·금액, 신고보상 제도 목록. 이 문서의 사실 관계 확인 (Cowork + korean-law MCP) | `data/golden/*.csv`, 확인 메모 |
-| 1 | L0: 조세 법령 수집 → 정규화 → 위임 연결 → 배치 내보내기/가져오기 | 기준일 조문 재현, 배치 왕복 테스트 통과 |
-| 2 | L1: `leo-classify`, `leo-extract` + 예약 작업 + 검증 | 첫 재현율·검증 실패율·처리량 수치 |
-| 3 | L2·L4: `leo-synthesize`, gap 쿼리, `leo-weekly-report` | 첫 주간 보고서 |
-| 4 | L3 정착: `leo-explore`로 검토와 아이디어 기록 반복 | 정밀도 수치, idea 누적 |
+| 1 | L0: 조세 법령 수집 → 정규화 → 위임 연결 → 배치 내보내기/가져오기 (완료. 연혁·부칙 남음) | 기준일 조문 재현, 배치 왕복 테스트 통과 |
+| 2 | L1: `kloe-classify`, `kloe-extract` + `kloe agent` + 검증 (진행 중: 분류 완료, 추출 준비됨) | 첫 재현율·검증 실패율·처리량 수치 |
+| 3 | L2·L4: `kloe-synthesize`, gap 쿼리, `kloe-weekly-report` | 첫 주간 보고서 |
+| 4 | L3 정착: `kloe-explore`로 검토와 아이디어 기록 반복 | 정밀도 수치, idea 누적 |
 | 5 | 보상 조항: 전체 법령 키워드 스윕 → L1·L2 | `reward` 카탈로그 |
-| 6 | 보조금·고시·조례로 확장 | 영역별 재현율 |
+| 6 | 보조금·고시·조례로 확장 (보조금24·K-Startup 공고는 먼저 붙음, 결정 18) | 영역별 재현율 |
 
 ## 11. 원칙
 
@@ -519,13 +549,13 @@ leo/
 5. 모르면 `uncertain`으로 남긴다. 추측으로 채우지 않는다.
 6. 법령 개정이나 모델·skill 변경 때 평가를 다시 돌린다.
 7. 부정수급, 명의 위장, 허위 증빙, 실질과 다른 거래 설계는 기회로 분류하지 않는다. `form_only`는 위험 표시이지 추천이 아니다.
-8. LLM 실행은 앱이 제공하는 기능 안에서만 한다.
+8. LLM 실행은 구독 안에서 앱이 제공하는 기능(Claude Code 헤드리스 포함)으로만 한다.
 
 ## 12. 열린 질문
 
 1. ~~Cowork 예약 작업이 이 저장소 폴더를 읽고 쓰고 `leo` CLI를 실행할 수 있는가.~~ 해결: 읽기·쓰기는 되고 CLI는 안 된다. `kloe` 실행은 launchd가 맡고, 에이전트는 `work/` 파일만 다룬다 (결정 16).
-2. ~~예약 작업에서 모델을 지정하는 방식.~~ 해결: Cowork는 설정에서 Haiku를 고르고(결정 17), `kloe agent`는 `claude -p --model`로 지정한다 (결정 18). 서브에이전트 모델 지정은 미확인.
-3. 실행당 처리 가능한 배치 수와 구독 한도 소모 (Phase 2 첫 주에 측정). 첫 수치: `kloe agent` Haiku로 20건짜리 배치 하나에 약 40초 (`--parallel 2`, 배치 2개 시험). 구독 한도 소모는 미측정.
+2. ~~예약 작업에서 모델을 지정하는 방식.~~ 해결: 헤드리스는 `claude -p --model`로 지정한다 (결정 20). Cowork는 설정에서 Haiku를 고른다 (결정 17).
+3. 실행당 처리 가능한 배치 수와 구독 한도 소모. 헤드리스 병렬 2에서 배치(20건)당 약 40초 (2026-11-12). 한도 소모는 미측정.
 4. 조세지출예산서가 기계 판독 가능한 형식인가.
 5. 신고보상 제도를 종합한 공식 목록이 있는가.
 6. 법제처 Open API의 연혁 조문 범위와 호출 한도.

@@ -2,11 +2,12 @@
 
 한국 법령에서 경제적 이익이 되는 조항을 발굴·구조화하는 개인 프로젝트. 설계와 결정 이력은 [docs/KLOE_CONTEXT.md](docs/KLOE_CONTEXT.md)에 있다 (문서 안의 "LEO", `leo`는 이 시스템의 이전 이름이고 지금은 KLOE, `kloe`다).
 
-## 현재 상태
+## 현재 상태 (2026-11-12)
 
 - Phase 0: `data/golden/` 정답 셋은 초안. 사용자가 직접 완성한다.
-- Phase 1 (L0 코드): `src/kloe/`. 수집, 정규화, 위임 연결, 배치 내보내기/가져오기 + 검증, requeue, DB 적재, CLI. 실제 법제처 응답(조특법·시행령·시행규칙)으로 동작을 확인했다. 테스트는 합성 fixture(`tests/fixtures/`, 실제 법령 아님)로 돈다.
-- Phase 2 (L1): classify 진행 중. 현행 조문 4,961건 분류 완료(2026-11-12), skill 0.2로 위임 항 재분류 대기. extract는 아직 skill이 없다.
+- Phase 1 (L0 코드): `src/kloe/`. 수집, 정규화, 위임 연결, 배치 내보내기/가져오기 + 검증, requeue, DB 적재, CLI. 조세특례제한법·시행령·시행규칙(조문 4,961개)을 실제 법제처 API로 받아 돌린다. 남은 것: 연혁 수집, 부칙 파싱.
+- Phase 2 (L1): 분류(`kloe-classify`)는 4,961건을 마쳤다 (true 2,414). 추출(`kloe-extract`)은 skill과 실행기가 준비됐고 돌릴 차례다. 공고(보조금24, K-Startup) 추출도 붙어 있다.
+- Mac에서 launchd가 매일 03:00 `kloe nightly`를 돈다. L1은 `kloe agent`가 Claude Code 헤드리스(Haiku)로 돈다.
 
 ## 실행
 
@@ -29,7 +30,7 @@ KLOE_TEST_DATABASE_URL=postgresql://kloe:kloe@localhost:5432/kloe_test pytest   
 ## 배치 규칙 (L1 에이전트용)
 
 - `work/queue/<stage>/batch-N.jsonl`을 `work/claimed/<stage>/`로 **rename**해서 가져가고, 가져간 직후 파일 시각을 갱신한다 (`touch`). `kloe requeue --stale 6h`가 이 시각을 본다.
-- 결과는 `work/out/<stage>/`에 같은 파일 이름으로 쓴다. 한 줄에 job 하나, `job_id`와 `extractor`(`cowork:<모델>:<skill>@<버전>`) 필수.
+- 결과는 `work/out/<stage>/`에 같은 파일 이름으로 쓴다. 한 줄에 job 하나, `job_id`와 `extractor`(`<cowork|cc>:<모델>:<skill>@<버전>`) 필수. `cc`는 `kloe agent`(Claude Code 헤드리스), `cowork`는 Cowork.
 - `extractor`의 skill 이름은 단계마다 달라야 한다 (`kloe-classify@…`, `kloe-extract@…`). 같으면 DB의 중복 방지 규칙에 걸려 결과가 저장되지 않는다.
 
 ## 매일 자동 실행 (Mac, launchd)
@@ -49,13 +50,48 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 
 ```bash
 .venv/bin/kloe agent --stage classify --model haiku --parallel 3 --max-batches 30 --ingest
+.venv/bin/kloe export --stage extract            # 분류에서 true인 조문을 추출 큐로
+.venv/bin/kloe agent --stage extract --model haiku --parallel 3 --max-batches 30 --ingest
 ```
+
+- 추출(`kloe-extract`)은 조문마다 `role`을 다시 가른다: `benefit`(혜택 본문), `condition`(다른 조문 혜택의 요건·범위·계산), `none`(위임만, 가산세·추징, 절차). 분류는 애매하면 true로 넘기므로 여기서 거른다.
+- 이 명령은 Mac 터미널에서 직접 돌린다. 원격 세션 안에서 `claude -p`를 띄우는 건 권한 설정이 막는다.
 
 - 처음 한 번: `claude --version`이 되는지 보고, `claude auth login`으로 구독 로그인.
 - `claude`가 PATH에 없거나(nvm 등) launchd에서 돌릴 때는 `KLOE_CLAUDE_BIN`에 전체 경로를 넣는다.
 - 실패한 배치(종료 코드 오류, 결과 없음, 줄 수 불일치, 시간 초과)는 queue로 돌아가고 같은 실행 안에서는 다시 잡지 않는다.
-- extractor는 `cc:<모델>:kloe-classify@<skill 버전>` (지금 0.2). 검증은 그대로 `kloe ingest`가 한다.
+- extractor는 `cc:<모델>:<skill>@<버전>`. 검증은 그대로 `kloe ingest`가 한다.
+
+### classify 다시 돌리기 (skill을 고쳤을 때)
+
+```bash
+.venv/bin/kloe export --stage classify --recheck     # 0.1에서 false로 빠진 위임 항 중 같은 조에 true가 있는 것 (2026-11-12 기준 180건)
+.venv/bin/kloe agent --stage classify --model haiku --parallel 2 --max-batches 10 --ingest
+```
+
+- 현재 skill 버전의 결과가 이미 있는 조문은 다시 나가지 않는다. 0.1 결과와 0.2 결과가 같이 남고, extract는 둘 중 하나라도 `true`면 그 조문을 내보낸다.
 - 사용량 한도가 걱정되면 `--parallel`과 `--max-batches`를 줄인다.
+
+## 지원사업·장학금·창업 공고 (보조금24, K-Startup)
+
+법령 말고 공고도 모은다 (설계 결정 18, 19). 공공데이터포털(data.go.kr)에서 아래 두 API를 **활용신청**하고, 마이페이지의 일반 인증키(Decoding)를 `~/.zshrc` 에 둔다.
+
+- 행정안전부_대한민국 공공서비스(혜택) 정보: https://www.data.go.kr/data/15113968/openapi.do
+- 창업진흥원_K-Startup 조회서비스: https://www.data.go.kr/data/15125364/openapi.do
+
+```bash
+export KLOE_DATA_GO_KR_KEY=...   # ~/.zshrc 에. nightly.sh 가 실행할 때 읽는다
+.venv/bin/kloe migrate
+.venv/bin/kloe fetch-programs --source gov24 --max-pages 1   # 처음엔 한 쪽만 받아 응답 모양 확인
+.venv/bin/kloe agent --stage program --model haiku --parallel 3 --max-batches 5 --ingest
+.venv/bin/kloe programs --extracted   # 마감 전 공고 + 추출 결과
+```
+
+- `kloe nightly` 가 매일 두 소스를 받고(키가 없으면 건너뜀), 마감이 안 지난 공고를 `work/queue/program/` 으로 내보낸다.
+- 공고는 분류 없이 `kloe-extract-program` 스킬이 대상 요건, 금액, 신청 기간, 근거법령을 인용과 함께 뽑는다. 인용과 근거법령이 원문에 없으면 검증에서 떨어진다.
+- 본문이 바뀌면 새 판이 생기고 이전 추출 결과는 stale이 되어 다시 나간다.
+- 근거법령과 이미 모은 법령의 연결: `select * from program_law_basis;`
+- 주소, 키 파라미터(`serviceKey`), 응답 필드 이름은 2026-11-12 실제 응답으로 확인했다. 보조금24 전체 약 1만 1천 건, K-Startup 모집중 약 200건이다. 보조금24 신청기한은 연도 없는 자유 글이 많아서 그런 공고는 마감일이 비고, 마감일이 비면 계속 추출 대상이 된다.
 
 ## L1 예약 작업 (Cowork, 예비)
 
@@ -65,14 +101,3 @@ KLOE 폴더를 연결하고, 모델은 Haiku·effort medium, 프롬프트는 한
 ```
 /Users/chris/KLOE/skills/kloe-classify/SKILL.md 를 읽고 그대로 따라서 배치 하나를 처리해라.
 ```
-
-## classify 다시 돌리기 (skill을 고쳤을 때)
-
-classify는 애매하면 `true`로 둔다. `false`로 빠진 조문은 다음 단계로 가지 않아서, 놓친 것은 다시 분류해야만 되살아난다.
-
-```bash
-.venv/bin/kloe export --stage classify --recheck     # 0.1에서 false로 빠진 위임 항 중 같은 조에 true가 있는 것 (2026-11-12 기준 180건)
-.venv/bin/kloe agent --stage classify --model haiku --parallel 2 --max-batches 10 --ingest
-```
-
-- 현재 skill 버전의 결과가 이미 있는 조문은 다시 나가지 않는다. 같은 조문에 0.1 결과와 0.2 결과가 같이 남고, extract는 둘 중 하나라도 `true`면 그 조문을 내보낸다.

@@ -6,7 +6,7 @@ import re
 from datetime import date
 
 from kloe.models import normalize_ws
-from kloe.schema import ClassifyResult, ExtractResult, Quote
+from kloe.schema import BenefitSize, ClassifyResult, ExtractResult, ProgramResult, Quote
 
 _UNIT = {"조": 10**12, "억": 10**8, "만": 10**4}
 _SMALL = {"천": 1000, "백": 100, "십": 10}
@@ -46,11 +46,13 @@ def check_quotes(quotes: list[Quote], source_text: str) -> list[str]:
     return errors
 
 
-def check_numbers(result: ExtractResult) -> list[str]:
-    size = result.fact.benefit_size
+def check_numbers(result: ExtractResult | ProgramResult) -> list[str]:
+    return check_size(result.fact.benefit_size, result.fact.quotes)
+
+
+def check_size(size: BenefitSize | None, quotes: list[Quote]) -> list[str]:
     if size is None:
         return []
-    quotes = result.fact.quotes
     scoped = [q.quote for q in quotes if q.field.startswith("benefit_size")] or [q.quote for q in quotes]
     joined = normalize_ws(" ".join(scoped))
     compact = joined.replace(" ", "")
@@ -74,11 +76,23 @@ def check_time_window(result: ExtractResult, effective_from: date) -> list[str]:
     return errors
 
 
-def verify(result: ClassifyResult | ExtractResult, job: dict) -> list[str]:
+def check_legal_basis(basis: list[str], source_text: str) -> list[str]:
+    src = normalize_ws(source_text)
+    return [f"근거법령이 원문에 없음: {b[:40]!r}" for b in basis if normalize_ws(b) not in src]
+
+
+def verify(result: ClassifyResult | ExtractResult | ProgramResult, job: dict) -> list[str]:
     text = job["text"]
     if isinstance(result, ClassifyResult):
         return check_quotes(result.quotes, text)
+    if isinstance(result, ProgramResult):
+        errors = check_quotes(result.fact.quotes, text)
+        errors += check_numbers(result)
+        errors += check_legal_basis(result.fact.legal_basis, text)
+        return errors
     errors = check_quotes(result.fact.quotes, text)
     errors += check_numbers(result)
     errors += check_time_window(result, date.fromisoformat(job["effective_from"]))
+    if result.fact.parent_ref and normalize_ws(result.fact.parent_ref).replace(" ", "") not in normalize_ws(text).replace(" ", ""):
+        errors.append(f"parent_ref가 원문에 없음: {result.fact.parent_ref[:40]!r}")
     return errors

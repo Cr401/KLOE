@@ -15,7 +15,9 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 
-STAGES = ("classify", "extract", "synthesize", "report")
+STAGES = ("classify", "extract", "program", "synthesize", "report")
+# 단계마다 job이 가리키는 대상의 키. program 단계는 조문이 아니라 공고 판(program_version)을 다룬다.
+TARGET_KEY = {"program": "version_id"}
 STATES = ("queue", "claimed", "out", "done", "failed")
 _BATCH_RE = re.compile(r"^batch-(\d{6})\.jsonl$")
 
@@ -61,6 +63,20 @@ def make_job(
     }
 
 
+def make_program_job(*, version_id: int, text_hash: str, source: str, title: str, apply_end: str | None,
+                     text: str, attempt: int = 0) -> dict:
+    return {
+        "job_id": job_id("program", version_id, text_hash),
+        "version_id": version_id,
+        "text_hash": text_hash,
+        "source": source,
+        "title": title,
+        "apply_end": apply_end,
+        "text": text,
+        "attempt": attempt,
+    }
+
+
 def read_jsonl(path: Path) -> list[dict]:
     rows = []
     with open(path, encoding="utf-8") as f:
@@ -98,11 +114,12 @@ def write_batch(work_dir: Path, stage: str, jobs: list[dict]) -> Path | None:
 
 
 def in_flight_provision_ids(work_dir: Path, stage: str) -> set[int]:
-    """아직 가져오지 않은 배치(queue, claimed)에 들어 있는 조문. 중복 내보내기를 막는다."""
+    """아직 가져오지 않은 배치(queue, claimed)에 들어 있는 조문(program 단계는 공고 판). 중복 내보내기를 막는다."""
+    key = TARGET_KEY.get(stage, "provision_id")
     ids: set[int] = set()
     for state in ("queue", "claimed"):
         for p in stage_dir(work_dir, state, stage).glob("batch-*.jsonl"):
-            ids.update(int(j["provision_id"]) for j in read_jsonl(p))
+            ids.update(int(j[key]) for j in read_jsonl(p))
     return ids
 
 

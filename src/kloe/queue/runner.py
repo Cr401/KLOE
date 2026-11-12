@@ -20,8 +20,8 @@ from kloe.queue.export import stage_dir
 from kloe.queue.ingest import claim
 
 REPO = Path(__file__).resolve().parents[3]
-SKILLS = {"classify": "kloe-classify"}
-SKILL_VERSION = {"classify": "0.2"}  # skills/kloe-classify/SKILL.md 의 version과 같아야 한다 (test_skills)
+SKILLS = {"classify": "kloe-classify", "extract": "kloe-extract", "program": "kloe-extract-program"}
+SKILL_VERSION = {"classify": "0.2", "extract": "0.1", "program": "0.1"}
 
 CommandBuilder = Callable[[str, str], Sequence[str]]  # (prompt, model) -> argv
 
