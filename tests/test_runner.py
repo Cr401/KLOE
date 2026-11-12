@@ -81,3 +81,26 @@ def test_command_limits_tools():
     assert argv[argv.index("--allowedTools") + 1] == "Read,Write"
     assert argv[argv.index("--model") + 1] == "claude-haiku-5-5"
     assert argv[argv.index("--effort") + 1] == "medium"
+
+
+def test_exec_error_releases_batch_and_stops(tmp_path):
+    work = tmp_path / "work"
+    for _ in range(4):
+        qx.write_batch(work, "classify", jobs(2))
+    bad = tmp_path / "not_exec"
+    bad.write_text("no shebang here\n")
+    bad.chmod(0o755)
+    res = qr.run(work, "classify", parallel=1, command=lambda p, m: [str(bad), p])
+    assert len(res) == 1 and res[0].fatal and not res[0].ok
+    assert len(list(qx.stage_dir(work, "queue", "classify").glob("batch-*.jsonl"))) == 4
+    assert list(qx.stage_dir(work, "claimed", "classify").iterdir()) == []
+
+
+def test_preflight_reports_unusable_binary(tmp_path):
+    import pytest
+
+    bad = tmp_path / "not_exec"
+    bad.write_text("no shebang here\n")
+    bad.chmod(0o755)
+    with pytest.raises(qr.AgentUnavailable):
+        qr.preflight(str(bad))

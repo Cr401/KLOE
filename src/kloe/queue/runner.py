@@ -53,6 +53,7 @@ class RunResult:
     batch: str
     ok: bool
     detail: str = ""
+    fatal: bool = False  # 실행 파일 자체가 안 돌면 남은 배치도 멈춘다
 
 
 def extractor(stage: str, model: str) -> str:
@@ -106,6 +107,10 @@ def run_one(work_dir: Path, stage: str, claimed: Path, model: str, *,
         tmp.unlink(missing_ok=True)
         release(work_dir, stage, claimed)
         return RunResult(claimed.name, False, f"시간 초과 {timeout}s")
+    except OSError as e:  # 실행 파일 문제 (없음, Exec format error 등)
+        tmp.unlink(missing_ok=True)
+        release(work_dir, stage, claimed)
+        return RunResult(claimed.name, False, f"실행 불가: {e}", fatal=True)
     if proc.returncode != 0 or not tmp.exists():
         tmp.unlink(missing_ok=True)
         release(work_dir, stage, claimed)
@@ -120,6 +125,24 @@ def run_one(work_dir: Path, stage: str, claimed: Path, model: str, *,
     return RunResult(claimed.name, True, f"{got}줄")
 
 
+class AgentUnavailable(RuntimeError):
+    pass
+
+
+def preflight(bin_path: str | None = None) -> str:
+    """배치를 잡기 전에 claude가 실행되는지 본다. 버전 문자열을 돌려준다."""
+    b = bin_path or claude_bin()
+    try:
+        proc = subprocess.run([b, "--version"], capture_output=True, text=True, timeout=60)
+    except OSError as e:
+        raise AgentUnavailable(f"claude 실행 불가 ({b}): {e}. 다시 설치하거나 KLOE_CLAUDE_BIN에 실제 실행 파일 경로를 넣어라") from e
+    except subprocess.TimeoutExpired as e:
+        raise AgentUnavailable(f"claude --version 시간 초과 ({b})") from e
+    if proc.returncode != 0:
+        raise AgentUnavailable(f"claude --version 실패 ({b}): {(proc.stderr or proc.stdout).strip()[:200]}")
+    return proc.stdout.strip()
+
+
 def run(work_dir: Path, stage: str, *, model: str = "haiku", parallel: int = 3, max_batches: int = 30,
         command: CommandBuilder = claude_command, timeout: int = 900,
         log: Callable[[str], None] = print) -> list[RunResult]:
@@ -127,14 +150,17 @@ def run(work_dir: Path, stage: str, *, model: str = "haiku", parallel: int = 3, 
     이번 실행에서 실패한 배치는 queue로 돌아가고, 같은 실행 안에서는 다시 가져가지 않는다."""
     if stage not in SKILLS:
         raise ValueError(f"{stage} 단계 실행기는 아직 없다")
+    if command is claude_command:
+        log(f"claude {preflight()}")
     results: list[RunResult] = []
     tried: set[str] = set()
     lock = threading.Lock()
+    stop = threading.Event()
 
     def worker() -> None:
-        while True:
+        while not stop.is_set():
             with lock:
-                if len(tried) >= max_batches:
+                if stop.is_set() or len(tried) >= max_batches:
                     return
                 claimed = claim_next(work_dir, stage, tried)
                 if claimed is None:
@@ -144,6 +170,8 @@ def run(work_dir: Path, stage: str, *, model: str = "haiku", parallel: int = 3, 
             with lock:
                 log(f"{'ok' if r.ok else 'FAIL'} {stage}/{r.batch}: {r.detail}")
                 results.append(r)
+                if r.fatal:
+                    stop.set()
 
     with ThreadPoolExecutor(max_workers=max(1, parallel)) as ex:
         for f in [ex.submit(worker) for _ in range(max(1, parallel))]:

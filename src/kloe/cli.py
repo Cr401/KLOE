@@ -222,8 +222,12 @@ def cmd_requeue(args) -> int:
 
 def cmd_agent(args) -> int:
     work_dir, _ = _paths(args)
-    results = qr.run(work_dir, args.stage, model=args.model, parallel=args.parallel,
-                     max_batches=args.max_batches, timeout=args.timeout)
+    try:
+        results = qr.run(work_dir, args.stage, model=args.model, parallel=args.parallel,
+                         max_batches=args.max_batches, timeout=args.timeout)
+    except qr.AgentUnavailable as e:
+        print(f"agent 중단: {e}", file=sys.stderr)
+        return 2
     ok = sum(r.ok for r in results)
     print(f"agent {args.stage}: {ok} ok, {len(results) - ok} failed")
     if args.ingest:
