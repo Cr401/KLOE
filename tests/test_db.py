@@ -153,3 +153,19 @@ def test_programs_end_to_end(conn, tmp_path, monkeypatch):
     assert conn.execute("select count(*) as n from program_fact where status = 'stale'").fetchone()["n"] == 1
     again = cli.export_stage(conn, work, "program", 100, 10)
     assert [j["title"] for j in qi.read_jsonl(again[0])] == ["2027년 테스트 예비창업패키지 모집"]
+
+
+def test_recheck_exports_false_delegations_next_to_true(conn, tmp_path):
+    work = tmp_path / "work"
+    cli.load_files(conn, [FIX / "law_v1.xml", FIX / "decree_v1.xml"])
+    cli.link_law(conn, "테스트특례법")
+    drain(conn, work, "classify")  # 가짜 에이전트(@0.0): 16-1 true, 16-2 false
+    conn.execute("""update fact f set payload = payload || '{"reason": "신청서를 하위 법령에 위임"}'
+                    from provision p where p.id = f.provision_id and p.article_key = '16-2'""")
+
+    def keys(paths):
+        return [j["article_key"] for p in paths for j in qi.read_jsonl(p)]
+
+    assert cli.export_stage(conn, work, "classify", 100, 10, recheck="0.0") == []  # 그 버전 결과가 이미 있음
+    assert keys(cli.export_stage(conn, work, "classify", 100, 10, recheck="9.9")) == ["16-2"]
+    assert cli.export_stage(conn, work, "classify", 100, 10, recheck="9.9") == []  # queue에 있는 동안은 다시 안 나감

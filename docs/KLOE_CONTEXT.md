@@ -49,6 +49,7 @@
 | 20 | L1 기본 실행은 Mac의 **Claude Code 헤드리스**(`kloe agent` → `claude -p`, Haiku, effort medium)로 한다. Cowork 예약 작업은 예비 | 사용자 결정 (2026-11-09). VM·승인 대기 문제가 없고 병렬로 빠름. 구독 로그인을 그대로 씀. 잠금과 rename은 실행기가 하고 에이전트에게는 Read·Write 도구만 준다 |
 | 21 | 분류는 **애매하면 true**로 넘기고, 거르기는 추출 단계에서 한다. 추출은 조문마다 `role`(`benefit`·`condition`·`none`)을 다시 가른다. 일몰된 특례도 분류에서는 true, 기한은 추출에서 기록하고 코드가 검증한다 | 사용자 결정 (2026-11-09, 2026-11-12). 분류에서 false로 빠진 조문은 뒤에서 되살릴 수 없으므로 재현율을 우선함 |
 | 22 | `extractor`는 `<실행 환경>:<모델>:<skill>@<버전>`. 실행 환경은 `cowork`(Cowork) 또는 `cc`(Claude Code 헤드리스) | 같은 skill이라도 실행 환경별 결과를 나눠 비교하기 위함 |
+| 23 | `kloe-classify` 0.2: 혜택의 계산·한도·요건·대상·신청을 하위 법령에 위임만 하는 항도 true. 0.1에서 false로 빠진 이런 항(같은 조의 다른 항이 true인 것, 180건)은 `kloe export --stage classify --recheck`로 다시 분류한다. 0.1 결과는 지우지 않고 0.2 결과를 더한다 | 사용자 결정 (2026-11-12, 결정 21의 적용). 0.1에서 이런 항이 false 180건·true 91건으로 갈렸다. 주의: `kloe-extract` 0.1은 위임만 하는 항을 `role=none`으로 보내므로, 추출 결과에 차이가 나려면 그 규칙도 바꿔야 한다 |
 
 ## 검토했다가 버린 대안
 
@@ -145,7 +146,7 @@ Mac(`/Users/chris/KLOE`)에서 OC 키로 실제 API를 호출해 확인했다.
 - 현행 조문 4,961건 전부 분류·검증 통과 (실패 0). true 2,414 / false 2,547.
 - true를 법령별로: 법률 852/1,872, 시행령 1,321/2,699, 시행규칙 241/390. 유형별: exemption 912, credit 467, nontaxable 456, deferral 288, deduction 244, subsidy 45, fee_waiver 2.
 - 실행: 첫 배치는 Cowork(Haiku), 대부분은 Cowork 쪽 Haiku 작업, 40건은 `kloe agent` 헤드리스 시험(병렬 2, 배치 20건당 약 40초).
-- 샘플 검토 (true 50, false 15, `reports/classify-sample-2026-11-12.md`, 커밋 안 함): true의 대부분은 혜택의 범위·요건·계산·한도를 정하는 시행령·시행규칙 조문이다. 판정이 흔들린 유형은 위임만 하는 조문(true·false가 섞임), 가산세·추징 크기를 정하는 조문 일부, 절차 조문 일부다. 결정 21에 따라 분류 기준은 그대로 두고 추출의 `role=none`으로 거른다. 위임만 하는 조문은 하위 조문이 따로 분류되므로 false로 빠져도 내용은 잃지 않는다.
+- 샘플 검토 (true 50, false 15, `reports/classify-sample-2026-11-12.md`): true의 대부분은 혜택의 범위·요건·계산·한도를 정하는 시행령·시행규칙 조문이다. 판정이 흔들린 유형은 위임만 하는 조문(true·false가 섞임), 가산세·추징 크기를 정하는 조문 일부, 절차 조문 일부다. 가산세·추징·절차 쪽은 결정 21에 따라 분류 기준을 그대로 두고 추출의 `role=none`으로 거른다. 위임만 하는 조문은 skill 0.2에서 true로 정리하고, 0.1에서 false로 빠진 180건을 `--recheck`로 다시 분류한다 (결정 23). 하위 조문은 따로 분류되므로 내용 자체는 0.1에서도 잃지 않았다.
 
 **헤드리스 실행 (`kloe agent`)**
 - Claude Code CLI 2.1.x 옵션 확인: `--model`, `--effort`, `--tools`, `--allowedTools`, `--permission-mode dontAsk`, `--no-session-persistence`. `--max-turns`는 없다. `--bare`는 구독 로그인을 읽지 않으므로 쓰지 않는다.
@@ -153,10 +154,10 @@ Mac(`/Users/chris/KLOE`)에서 OC 키로 실제 API를 호출해 확인했다.
 
 ## 현재 상태
 
-- 설계 v0.3. 아래 2부가 전문이다. 결정 16~22를 더했다.
+- 설계 v0.3. 아래 2부가 전문이다. 결정 16~23을 더했다.
 - 저장소: GitHub `Cr401/KLOE` (Mac의 `/Users/chris/KLOE`에 clone). DB: Mac Docker의 Postgres 16. 매일 03:00 launchd가 수집·가져오기·내보내기를 돈다.
 - **Phase 1 대부분 완료.** 남은 것: 연혁 수집, 부칙 파싱.
-- **Phase 2 진행 중.** 분류는 현행 조문 4,961건을 마쳤다 (true 2,414). 추출 skill `kloe-extract` v0.1과 `kloe agent --stage extract`를 만들었고, 2,414건 추출을 돌릴 차례다.
+- **Phase 2 진행 중.** 분류는 현행 조문 4,961건을 마쳤다 (true 2,414). skill 0.2로 위임 항 180건 재분류가 남았다 (`--recheck`, 결정 23). 추출 skill `kloe-extract` v0.1과 `kloe agent --stage extract`를 만들었고, 2,414건 추출을 돌릴 차례다.
 - 공고(보조금24, K-Startup) 수집과 `kloe-extract-program` 추출이 붙었다 (결정 18, 19).
 - 다른 작업에서 만든 보고서 `reports/benefits-report-2026-11-12.*`, `reports/benefits-by-target-2026-11-12.*`(Mac, 커밋 안 함)는 검증 파이프라인 밖에서 만든 참고 자료다. DB의 fact는 추출 큐를 거친 것만 쓴다.
 - Phase 0 정답 셋은 사용자 몫으로 진행 중이다. `data/golden/reward_programs.csv`는 10개 제도 초안, `data/golden/tax_expenditure_2027.csv`는 헤더만 있다.
@@ -457,7 +458,7 @@ opportunity는 덮어쓰지 않는다. 새 행을 만들고 이전 행의 `super
 
 | skill | 계층 | 내용 |
 |---|---|---|
-| `kloe-classify` (v0.1, 있음) | L1 | 혜택 조항 판정 기준, 유형 정의, 경계 사례 예시 |
+| `kloe-classify` (v0.2, 있음) | L1 | 혜택 조항 판정 기준, 유형 정의, 경계 사례 예시 |
 | `kloe-extract` (v0.1, 있음) | L1 | role 판정, 3.1 스키마, 인용 규칙, `uncertain` 사용 규칙 |
 | `kloe-extract-program` (v0.1, 있음) | L1 | 공고 추출 (결정 19) |
 | `kloe-synthesize` (아직) | L2 | fact 묶기 규칙, substance·business_signal·time_signal 기준, G2·G5·G6 판정 기준, 순위 근거 작성법 |

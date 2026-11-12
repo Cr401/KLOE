@@ -61,6 +61,15 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 - `claude`가 PATH에 없거나(nvm 등) launchd에서 돌릴 때는 `KLOE_CLAUDE_BIN`에 전체 경로를 넣는다.
 - 실패한 배치(종료 코드 오류, 결과 없음, 줄 수 불일치, 시간 초과)는 queue로 돌아가고 같은 실행 안에서는 다시 잡지 않는다.
 - extractor는 `cc:<모델>:<skill>@<버전>`. 검증은 그대로 `kloe ingest`가 한다.
+
+### classify 다시 돌리기 (skill을 고쳤을 때)
+
+```bash
+.venv/bin/kloe export --stage classify --recheck     # 0.1에서 false로 빠진 위임 항 중 같은 조에 true가 있는 것 (2026-11-12 기준 180건)
+.venv/bin/kloe agent --stage classify --model haiku --parallel 2 --max-batches 10 --ingest
+```
+
+- 현재 skill 버전의 결과가 이미 있는 조문은 다시 나가지 않는다. 0.1 결과와 0.2 결과가 같이 남고, extract는 둘 중 하나라도 `true`면 그 조문을 내보낸다.
 - 사용량 한도가 걱정되면 `--parallel`과 `--max-batches`를 줄인다.
 
 ## 지원사업·장학금·창업 공고 (보조금24, K-Startup)

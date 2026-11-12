@@ -219,21 +219,39 @@ def open_programs(conn, today: date | None = None) -> list[dict]:
 
 # ---------- 배치 ----------
 
-def export_candidates(conn, stage: str, limit: int, exclude: set[int]) -> list[dict]:
-    """classify: 현행 조문 중 분류 fact가 없는 것. extract: 혜택으로 분류됐는데 추출 fact가 없는 것."""
+def export_candidates(conn, stage: str, limit: int, exclude: set[int], recheck: str | None = None) -> list[dict]:
+    """classify: 현행 조문 중 분류 fact가 없는 것. extract: 혜택으로 분류됐는데 추출 fact가 없는 것.
+
+    recheck(skill 버전, classify만): false로 분류된 위임 항 중 같은 조의 다른 항이 true인 것을,
+    그 버전의 결과가 아직 없으면 다시 내보낸다. 놓친 혜택은 다음 단계에서 되살릴 수 없어서다.
+    """
     base = """
       select p.id, p.article_key, p.text, p.text_hash, p.effective_from, d.law_name
       from provision p join source_document d on d.id = p.document_id
       where p.effective_to is null
-        and not exists (select 1 from fact f where f.provision_id = p.id and f.text_hash = p.text_hash
-                        and f.payload->>'stage' = %(stage)s and f.status <> 'rejected')
     """
+    cls = "f.provision_id = p.id and f.text_hash = p.text_hash and f.payload->>'stage' = 'classify' and f.status = 'verified'"
+    if recheck is None:
+        base += """ and not exists (select 1 from fact f where f.provision_id = p.id and f.text_hash = p.text_hash
+                                    and f.payload->>'stage' = %(stage)s and f.status <> 'rejected')"""
+    elif stage == "classify":
+        base += f"""
+        and exists (select 1 from fact f where {cls} and not f.is_benefit
+                    and (p.text ~ '(대통령령|재정경제부령)으로 정한다' or f.payload->>'reason' ~ '위임'))
+        and not exists (select 1 from fact f where {cls} and f.is_benefit)
+        and not exists (select 1 from fact f where {cls} and f.extractor like %(ver)s)
+        and exists (select 1 from provision s join fact f on f.provision_id = s.id and f.text_hash = s.text_hash
+                    where f.payload->>'stage' = 'classify' and f.status = 'verified' and f.is_benefit
+                      and s.document_id = p.document_id and s.effective_to is null
+                      and split_part(s.article_key, '-', 1) = split_part(p.article_key, '-', 1))"""
+    else:
+        raise ValueError("recheck은 classify 단계만")
     if stage == "extract":
         base += """ and exists (select 1 from fact f where f.provision_id = p.id and f.text_hash = p.text_hash
                                and f.payload->>'stage' = 'classify' and f.is_benefit and f.status = 'verified')"""
     elif stage != "classify":
         raise ValueError(f"{stage} 단계 내보내기는 Phase 1 범위 밖")
-    rows = [r for r in conn.execute(base + " order by p.id", {"stage": stage}) if r["id"] not in exclude]
+    rows = [r for r in conn.execute(base + " order by p.id", {"stage": stage, "ver": f"%kloe-classify@{recheck}"}) if r["id"] not in exclude]
     rows = rows[:limit]
     for r in rows:
         r["delegations"] = [

@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+from kloe.queue.runner import SKILL_VERSION
 from kloe.schema import EXTRACTOR_PATTERN, ClassifyResult
 
 SKILLS = Path(__file__).resolve().parents[1] / "skills"
@@ -22,6 +23,7 @@ def test_classify_example_matches_schema():
         assert re.match(EXTRACTOR_PATTERN, ex["extractor"])
     version = re.search(r"^version: (\S+)$", md, flags=re.M).group(1)
     assert all(ex["extractor"].endswith(f"kloe-classify@{version}") for ex in examples)
+    assert SKILL_VERSION["classify"] == version  # 실행기가 쓰는 extractor 버전
     # 문서에 적힌 benefit_type 표가 스키마의 값과 같아야 한다
     table = set(re.findall(r"^\| (\w+) \| ", md, flags=re.M)) - {"benefit_type"}
     allowed = set(ClassifyResult.model_fields["benefit_type"].annotation.__args__[0].__args__)

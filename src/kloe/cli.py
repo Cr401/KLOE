@@ -113,7 +113,7 @@ def fetch_programs(conn, raw_dir: Path, sources: list[str], *, max_pages: int = 
     return total_p, total_v
 
 
-def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int) -> list[Path]:
+def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int, recheck: str | None = None) -> list[Path]:
     if stage == "program":
         rows = db.export_program_candidates(conn, limit, qx.in_flight_provision_ids(work_dir, stage))
         return _write_batches(conn, work_dir, stage, [
@@ -122,7 +122,7 @@ def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int) 
                                 text=r["text"])
             for r in rows
         ], batch_size)
-    rows = db.export_candidates(conn, stage, limit, qx.in_flight_provision_ids(work_dir, stage))
+    rows = db.export_candidates(conn, stage, limit, qx.in_flight_provision_ids(work_dir, stage), recheck)
     jobs = [
         qx.make_job(
             stage,
@@ -174,7 +174,8 @@ def cmd_link(args) -> int:
 def cmd_export(args) -> int:
     work_dir, _ = _paths(args)
     with db.connect(args.db) as conn:
-        export_stage(conn, work_dir, args.stage, args.limit, args.batch_size)
+        recheck = qr.SKILL_VERSION["classify"] if args.recheck else None
+        export_stage(conn, work_dir, args.stage, args.limit, args.batch_size, recheck)
     return 0
 
 
@@ -297,6 +298,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stage", choices=STAGES, required=True)
     p.add_argument("--limit", type=int, default=5000)
     p.add_argument("--batch-size", type=int, default=20)
+    p.add_argument("--recheck", action="store_true",
+                   help="classify만: false로 분류된 위임 항 중 같은 조에 true가 있는 것을 현재 skill 버전으로 다시 분류")
     p.set_defaults(func=cmd_export)
 
     p = sub.add_parser("ingest", help="결과 파일 가져오기 + 검증")
