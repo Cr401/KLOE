@@ -20,8 +20,8 @@ from kloe.queue.export import stage_dir
 from kloe.queue.ingest import claim
 
 REPO = Path(__file__).resolve().parents[3]
-SKILLS = {"classify": "kloe-classify", "program": "kloe-extract-program"}
-SKILL_VERSION = {"classify": "0.1", "program": "0.1"}
+SKILLS = {"classify": "kloe-classify", "extract": "kloe-extract", "program": "kloe-extract-program"}
+SKILL_VERSION = {"classify": "0.1", "extract": "0.1", "program": "0.1"}
 
 CommandBuilder = Callable[[str, str], Sequence[str]]  # (prompt, model) -> argv
 

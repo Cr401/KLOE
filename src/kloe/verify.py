@@ -93,4 +93,6 @@ def verify(result: ClassifyResult | ExtractResult | ProgramResult, job: dict) ->
     errors = check_quotes(result.fact.quotes, text)
     errors += check_numbers(result)
     errors += check_time_window(result, date.fromisoformat(job["effective_from"]))
+    if result.fact.parent_ref and normalize_ws(result.fact.parent_ref).replace(" ", "") not in normalize_ws(text).replace(" ", ""):
+        errors.append(f"parent_ref가 원문에 없음: {result.fact.parent_ref[:40]!r}")
     return errors
