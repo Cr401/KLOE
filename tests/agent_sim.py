@@ -19,7 +19,7 @@ def fake_result(stage: str, job: dict) -> dict:
                 "quotes": [{"field": "is_benefit", "quote": first_sentence}]}
     if stage == "program":
         first_line = text.splitlines()[0]
-        basis = re.findall(r"^근거법령: (.+)$", text, flags=re.M)
+        basis = [b for line in re.findall(r"^근거법령: (.+)$", text, flags=re.M) for b in line.split("||")]
         return {"job_id": job["job_id"], "extractor": EXTRACTORS[stage],
                 "fact": {"is_benefit": True, "benefit_type": "subsidy", "legal_basis": basis,
                          "quotes": [{"field": "summary", "quote": first_line}]}}

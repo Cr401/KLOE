@@ -76,7 +76,7 @@ export KLOE_DATA_GO_KR_KEY=...   # ~/.zshrc 에. nightly.sh 가 실행할 때 �
 - 공고는 분류 없이 `kloe-extract-program` 스킬이 대상 요건, 금액, 신청 기간, 근거법령을 인용과 함께 뽑는다. 인용과 근거법령이 원문에 없으면 검증에서 떨어진다.
 - 본문이 바뀌면 새 판이 생기고 이전 추출 결과는 stale이 되어 다시 나간다.
 - 근거법령과 이미 모은 법령의 연결: `select * from program_law_basis;`
-- **가정한 것**: 보조금24 base URL(`api.odcloud.kr/api`), 두 API의 키 파라미터 이름(`serviceKey`), K-Startup 응답 필드 이름과 모집중 필터 형식. 실제 응답을 처음 받으면 `src/kloe/normalize/program.py` 의 `FIELDS`·`KEYS` 와 `tests/fixtures/programs_*.json` 을 맞춘다.
+- 주소, 키 파라미터(`serviceKey`), 응답 필드 이름은 2026-11-12 실제 응답으로 확인했다. 보조금24 전체 약 1만 1천 건, K-Startup 모집중 약 200건이다. 보조금24 신청기한은 연도 없는 자유 글이 많아서 그런 공고는 마감일이 비고, 마감일이 비면 계속 추출 대상이 된다.
 
 ## L1 예약 작업 (Cowork, 예비)
 

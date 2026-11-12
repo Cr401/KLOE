@@ -140,7 +140,10 @@ def test_programs_end_to_end(conn, tmp_path, monkeypatch):
     assert len(db.open_programs(conn)) == 3
 
     basis = list(conn.execute("select basis, law_id from program_law_basis"))
-    assert [(b["basis"], b["law_id"]) for b in basis] == [("테스트주거지원법 제21조", None)]  # 아직 안 모은 법령
+    assert sorted((b["basis"], b["law_id"]) for b in basis) == [
+        ("테스트주거지원법(제21조, 제0항)", None),  # 아직 안 모은 법령
+        ("테스트특례법(제16조, 제1항)", "999001"),
+    ]
 
     # 본문이 바뀌면 새 판 + 이전 fact stale + 다시 내보내기
     changed = json.loads((FIX / "programs_kstartup_p1.json").read_text(encoding="utf-8"))

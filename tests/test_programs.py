@@ -67,13 +67,17 @@ def test_normalize_gov24_and_kstartup():
     assert youth.apply_start == date(2026, 2, 26) and youth.apply_end == date(2027, 2, 25)
     assert youth.agency == "테스트부" and youth.url == "https://example.invalid/apply/1"
     assert youth.text.splitlines()[0] == "서비스명: 테스트 청년 월세 지원"
-    assert "근거법령: 테스트주거지원법 제21조" in youth.text and "수정일시" not in youth.text
+    assert "근거법령: 테스트주거지원법(제21조, 제0항)||테스트특례법(제16조, 제1항)" in youth.text
+    assert "수정일시" not in youth.text and "근거자치법규" not in youth.text  # None은 빈 값
     assert g[1].apply_end is None  # 상시
 
     k = parse_rows("kstartup", rows("programs_kstartup_p1.json"))[0]
     assert (k.external_id, k.apply_start, k.apply_end) == ("990001", date(2027, 2, 1), date(2027, 2, 28))
-    assert k.url == "https://example.invalid/kstartup/990001" and "공고내용: 예비창업자에게" in k.text
+    assert k.url == "https://example.invalid/kstartup/view.do?schM=view&pbancSn=990001"  # &amp; 풀림
+    assert "통합공고사업명: 2027년 테스트 예비창업패키지(1차)" in k.text  # &amp;#40; 두 번 풀림
+    assert "공고내용: 예비창업자에게" in k.text and "우대사항" not in k.text
     assert parse_rows("kstartup", [{"pbanc_sn": "", "biz_pbanc_nm": "x"}]) == []  # ID 없으면 버림
+    assert parse_page((FIX / "programs_kstartup_p1.json").read_bytes())[1] == 1  # 필터 있으면 matchCount
 
 
 def job_for(record, version_id=1):
@@ -118,4 +122,4 @@ def test_program_queue_round_trip(tmp_path):
     run_agent(tmp_path, "program", p.name)
     rep = qi.ingest_batch(tmp_path, "program", p.name)
     assert rep.ok and len(rep.accepted) == 2
-    assert rep.accepted[0][1].fact.legal_basis == ["테스트주거지원법 제21조"]
+    assert rep.accepted[0][1].fact.legal_basis == ["테스트주거지원법(제21조, 제0항)", "테스트특례법(제16조, 제1항)"]
