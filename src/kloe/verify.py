@@ -8,27 +8,64 @@ from datetime import date
 from kloe.models import normalize_ws
 from kloe.schema import BenefitSize, ClassifyResult, ExtractResult, ProgramResult, Quote
 
-_UNIT = {"조": 10**12, "억": 10**8, "만": 10**4}
+_BIG = {"조": 10**12, "억": 10**8, "만": 10**4}
 _SMALL = {"천": 1000, "백": 100, "십": 10}
-# "2억5천만원", "3천만원", "1,000만원", "30,000,000원"
-_AMOUNT_RE = re.compile(r"((?:[\d,]+\s*[천백십]?\s*[조억만]?\s*)+)원")
-_CHUNK_RE = re.compile(r"([\d,]+)\s*([천백십])?\s*([조억만])?")
+# "2억5천만원", "1천5백만원", "3천만원", "1,000만원", "30,000,000원"
+_AMOUNT_RE = re.compile(r"((?:[\d,]*\s*[천백십조억만]\s*|[\d,]+\s*)+)원")
+_TOKEN_RE = re.compile(r"([\d,]+)|([천백십])|([조억만])")
+
+
+def _korean_number(s: str) -> int | None:
+    """숫자+한글 단위. 작은 단위(천·백·십)는 모았다가 큰 단위(만·억·조)에 곱한다: 1천5백만 = (1000+500)×만."""
+    total = small = 0
+    num: int | None = None
+    seen = False
+    for m in _TOKEN_RE.finditer(s):
+        digits, sm, big = m.groups()
+        if digits is not None:
+            d = digits.replace(",", "")
+            if not d:
+                continue
+            if num is not None:
+                small += num
+            num, seen = int(d), True
+        elif sm:
+            small += (num if num is not None else 1) * _SMALL[sm]
+            num, seen = None, True
+        else:
+            if num is not None:
+                small += num
+            total += (small or 1) * _BIG[big]
+            small, num, seen = 0, None, True
+    if num is not None:
+        small += num
+    return total + small if seen else None
 
 
 def parse_krw_amounts(text: str) -> set[int]:
     amounts: set[int] = set()
     for m in _AMOUNT_RE.finditer(text):
-        total, any_chunk = 0, False
-        for c in _CHUNK_RE.finditer(m.group(1)):
-            digits = c.group(1).replace(",", "")
-            if not digits:
-                continue
-            any_chunk = True
-            n = int(digits) * _SMALL.get(c.group(2) or "", 1)
-            total += n * _UNIT.get(c.group(3) or "", 1)
-        if any_chunk:
-            amounts.add(total)
+        n = _korean_number(m.group(1))
+        if n:
+            amounts.add(n)
     return amounts
+
+
+# "100분의 10", "1천분의 5", "5분의 4", "10,000분의 3"
+_FRACTION_RE = re.compile(r"([\d,]*\s*[천백십만]?)\s*분의\s*([\d.]+)")
+
+
+def parse_fractions(text: str) -> set[float]:
+    out: set[float] = set()
+    for m in _FRACTION_RE.finditer(text):
+        den = _korean_number(m.group(1).replace(" ", "")) if m.group(1).strip() else None
+        try:
+            num = float(m.group(2))
+        except ValueError:
+            continue
+        if den:
+            out.add(num / den)
+    return out
 
 
 def _rate_forms(rate: float) -> list[str]:
@@ -57,7 +94,10 @@ def check_size(size: BenefitSize | None, quotes: list[Quote]) -> list[str]:
     joined = normalize_ws(" ".join(scoped))
     compact = joined.replace(" ", "")
     errors = []
-    if size.rate is not None and not any(f.replace(" ", "") in compact for f in _rate_forms(size.rate)):
+    if size.rate is not None and not (
+        any(f.replace(" ", "") in compact for f in _rate_forms(size.rate))
+        or any(abs(v - size.rate) < 1e-9 for v in parse_fractions(joined))
+    ):
         errors.append(f"benefit_size.rate={size.rate}이 인용 안에 없음")
     if size.cap_krw is not None and size.cap_krw not in parse_krw_amounts(joined):
         errors.append(f"benefit_size.cap_krw={size.cap_krw}이 인용 안에 없음")
@@ -68,9 +108,8 @@ def check_time_window(result: ExtractResult, effective_from: date) -> list[str]:
     tw = result.fact.time_window
     if tw is None:
         return []
+    # 일몰이 지난 특례도 현행 법령에 본문이 남아 있으면 그대로 기록한다 (결정 21). 지났는지는 조회할 때 본다.
     errors = []
-    if tw.sunset and tw.sunset < effective_from:
-        errors.append(f"일몰({tw.sunset})이 조문 시행일({effective_from})보다 앞섬")
     if tw.sunset and tw.effective_from and tw.sunset < tw.effective_from:
         errors.append("일몰이 time_window.effective_from보다 앞섬")
     return errors
