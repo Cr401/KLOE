@@ -60,3 +60,16 @@ def test_schema_rules():
     result(benefit_type=None, uncertain=[{"field": "benefit_type", "reason": "공제인지 감면인지 불분명"}])
     with pytest.raises(ValueError):
         ExtractResult.model_validate({"job_id": "x", "extractor": "sonnet", "fact": {"is_benefit": False}})
+
+
+def test_parent_ref_must_be_in_text():
+    from kloe.schema import ExtractResult
+    from kloe.verify import verify
+
+    r = ExtractResult.model_validate({"job_id": "extract:1:abc", "extractor": "cc:haiku:kloe-extract@0.1", "fact": {
+        "is_benefit": True, "role": "condition", "parent_ref": "법 제99조", "benefit_type": "credit",
+        "quotes": [{"field": "role", "quote": "공제한다"}]}})
+    job = {"text": "법 제29조의4제1항을 적용할 때 공제한다", "effective_from": "2020-01-01"}
+    assert any("parent_ref" in e for e in verify(r, job))
+    r.fact.parent_ref = "법 제29조의4제1항"
+    assert verify(r, job) == []

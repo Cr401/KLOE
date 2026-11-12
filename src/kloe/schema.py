@@ -11,6 +11,7 @@ BenefitType = Literal[
     "deduction", "credit", "exemption", "nontaxable", "deferral",
     "subsidy", "loan", "guarantee", "fee_waiver", "reward",
 ]
+Role = Literal["benefit", "condition", "none"]  # 혜택 본문 / 혜택의 요건·범위·계산·한도 / 혜택 아님
 TriggerKind = Literal["invest", "hire", "relocate", "hold", "found", "spend", "report", "participate"]
 
 EXTRACTOR_PATTERN = r"^(cowork|cc):[^:\s]+:[^:\s]+$"  # <실행 환경 cowork|cc>:<모델>:<skill 버전>
@@ -62,6 +63,9 @@ class Uncertain(_Strict):
 
 class FactPayload(_Strict):
     is_benefit: bool
+    role: Role | None = None
+    parent_ref: str | None = None  # condition이면 본문에 적힌 상위 조문 표기 그대로 (예: "법 제29조의4제1항")
+    not_benefit_reason: str | None = None  # role=none 일 때 이유
     benefit_type: BenefitType | None = None
     trigger_kind: TriggerKind | None = None
     trigger: str | None = None
@@ -78,6 +82,12 @@ class FactPayload(_Strict):
     @model_validator(mode="after")
     def _benefit_fields(self) -> FactPayload:
         unsure = {u.field for u in self.uncertain}
+        if self.role == "none" and self.is_benefit:
+            raise ValueError("role=none인데 is_benefit=true")
+        if self.role in ("benefit", "condition") and not self.is_benefit:
+            raise ValueError(f"role={self.role}인데 is_benefit=false")
+        if self.role == "none" and not self.not_benefit_reason:
+            raise ValueError("role=none이면 not_benefit_reason이 있어야 한다")
         if self.is_benefit:
             if self.benefit_type is None and "benefit_type" not in unsure:
                 raise ValueError("혜택 조항인데 benefit_type이 없고 uncertain에도 없다")

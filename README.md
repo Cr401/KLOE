@@ -2,11 +2,12 @@
 
 한국 법령에서 경제적 이익이 되는 조항을 발굴·구조화하는 개인 프로젝트. 설계와 결정 이력은 [docs/KLOE_CONTEXT.md](docs/KLOE_CONTEXT.md)에 있다 (문서 안의 "LEO", `leo`는 이 시스템의 이전 이름이고 지금은 KLOE, `kloe`다).
 
-## 현재 상태
+## 현재 상태 (2026-11-12)
 
 - Phase 0: `data/golden/` 정답 셋은 초안. 사용자가 직접 완성한다.
-- Phase 1 (L0 코드): `src/kloe/`. 수집, 정규화, 위임 연결, 배치 내보내기/가져오기 + 검증, requeue, DB 적재, CLI. 테스트는 합성 fixture(`tests/fixtures/`, 실제 법령 아님)로 돈다.
-- 법제처 XML 태그 이름은 실제 응답을 보기 전이라 가정이다 (`src/kloe/normalize/parse.py`의 `TAGS`). OC 키를 받으면 실제 응답으로 fixture와 `TAGS`를 맞춰야 한다.
+- Phase 1 (L0 코드): `src/kloe/`. 수집, 정규화, 위임 연결, 배치 내보내기/가져오기 + 검증, requeue, DB 적재, CLI. 조세특례제한법·시행령·시행규칙(조문 4,961개)을 실제 법제처 API로 받아 돌린다. 남은 것: 연혁 수집, 부칙 파싱.
+- Phase 2 (L1): 분류(`kloe-classify`)는 4,961건을 마쳤다 (true 2,414). 추출(`kloe-extract`)은 skill과 실행기가 준비됐고 돌릴 차례다. 공고(보조금24, K-Startup) 추출도 붙어 있다.
+- Mac에서 launchd가 매일 03:00 `kloe nightly`를 돈다. L1은 `kloe agent`가 Claude Code 헤드리스(Haiku)로 돈다.
 
 ## 실행
 
@@ -29,7 +30,7 @@ KLOE_TEST_DATABASE_URL=postgresql://kloe:kloe@localhost:5432/kloe_test pytest   
 ## 배치 규칙 (L1 에이전트용)
 
 - `work/queue/<stage>/batch-N.jsonl`을 `work/claimed/<stage>/`로 **rename**해서 가져가고, 가져간 직후 파일 시각을 갱신한다 (`touch`). `kloe requeue --stale 6h`가 이 시각을 본다.
-- 결과는 `work/out/<stage>/`에 같은 파일 이름으로 쓴다. 한 줄에 job 하나, `job_id`와 `extractor`(`cowork:<모델>:<skill>@<버전>`) 필수.
+- 결과는 `work/out/<stage>/`에 같은 파일 이름으로 쓴다. 한 줄에 job 하나, `job_id`와 `extractor`(`<cowork|cc>:<모델>:<skill>@<버전>`) 필수. `cc`는 `kloe agent`(Claude Code 헤드리스), `cowork`는 Cowork.
 - `extractor`의 skill 이름은 단계마다 달라야 한다 (`kloe-classify@…`, `kloe-extract@…`). 같으면 DB의 중복 방지 규칙에 걸려 결과가 저장되지 않는다.
 
 ## 매일 자동 실행 (Mac, launchd)
@@ -49,12 +50,17 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 
 ```bash
 .venv/bin/kloe agent --stage classify --model haiku --parallel 3 --max-batches 30 --ingest
+.venv/bin/kloe export --stage extract            # 분류에서 true인 조문을 추출 큐로
+.venv/bin/kloe agent --stage extract --model haiku --parallel 3 --max-batches 30 --ingest
 ```
+
+- 추출(`kloe-extract`)은 조문마다 `role`을 다시 가른다: `benefit`(혜택 본문), `condition`(다른 조문 혜택의 요건·범위·계산), `none`(위임만, 가산세·추징, 절차). 분류는 애매하면 true로 넘기므로 여기서 거른다.
+- 이 명령은 Mac 터미널에서 직접 돌린다. 원격 세션 안에서 `claude -p`를 띄우는 건 권한 설정이 막는다.
 
 - 처음 한 번: `claude --version`이 되는지 보고, `claude auth login`으로 구독 로그인.
 - `claude`가 PATH에 없거나(nvm 등) launchd에서 돌릴 때는 `KLOE_CLAUDE_BIN`에 전체 경로를 넣는다.
 - 실패한 배치(종료 코드 오류, 결과 없음, 줄 수 불일치, 시간 초과)는 queue로 돌아가고 같은 실행 안에서는 다시 잡지 않는다.
-- extractor는 `cc:<모델>:kloe-classify@0.1`. 검증은 그대로 `kloe ingest`가 한다.
+- extractor는 `cc:<모델>:<skill>@<버전>`. 검증은 그대로 `kloe ingest`가 한다.
 - 사용량 한도가 걱정되면 `--parallel`과 `--max-batches`를 줄인다.
 
 ## 지원사업·장학금·창업 공고 (보조금24, K-Startup)
