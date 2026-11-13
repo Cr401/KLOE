@@ -100,6 +100,7 @@ select law_name, article_key, role, benefit_type, rate, cap_krw, sunset from ext
 ```
 
 - 이어받은 fact는 표본에서 뺀다. 한 번 감사한 fact는 다시 나가지 않는다. 특정 법령만 보려면 `--law-filter 조세특례제한법`.
+- 첫 감사(2026-11-13, 0.1): 50건 중 36건 문제 없음. 반복된 놓침(공제 기간, 같은 조 parent_ref, 구분별 율, 배제 조문의 role, 자격 기한)을 `kloe-extract` 0.2에 반영했다.
 - 감사는 nightly가 자동으로 내보내지 않는다. 추출 시험 배치 뒤 한 번, 그다음은 extract skill 버전이 바뀔 때만 돌린다.
 - 지적이 한 필드에 몰리면(예: `benefit_size`의 `lost`) skill을 고치고 다시 추출할지 판단한다.
 

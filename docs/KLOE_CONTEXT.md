@@ -56,6 +56,7 @@
 | 27 | **아이디어는 시스템이 만든다** (`kloe-ideate`, 3.4절을 바꿈). 입력은 혜택이 있는 조마다 코드가 묶은 클러스터와 코드가 렌더한 카드(저장 안 함, `opportunity`는 LLM 카드를 둘 때까지 비움). 렌즈 4개(조합·시간·허점·사업화)마다 배치 하나. 주장마다 근거 ID와 인용, 렌즈별 근거 형태, 수치 일치, 근거 집합 중복 차단을 코드가 검증한다. 근거 fact가 stale이면 `needs_recheck` | 2026-11-12 검토. 사용자 뜻은 "시스템이 아이디어를 가져오고 사람은 점검". LLM 카드는 점검 기록에서 카드 탓 drop이 쌓일 때 다시 본다 |
 | 28 | 점검은 코드가 만드는 `reports/YYYY-Www.review.md`에 keep/drop과 사유 태그(obvious, wrong_fact, infeasible, duplicate, other)를 표시하고 `kloe review-ingest`로 기록한다 (`review.target_kind = 'idea'`) | UI 없이 주당 몇 분. 되먹임(점검 내용을 다음 ideate에 넣기)은 점검이 30건쯤 쌓인 뒤에 |
 | 29 | 공고는 거르지 않고 내보내기 순서만 정한다 (K-Startup → 마감일 있는 것 → 지원유형). 본문(해시 기준)에서 문의처·구비서류를 뺀다. 소스의 최근 수집보다 3일 넘게 안 보인 공고는 퇴출 | 걸러 낸 공고는 영영 추출되지 않음. 전화번호만 바뀌어도 새 판이 생기던 문제 |
+| 30 | `kloe-extract` 0.2 (2026-11-13): 다른 항의 혜택을 배제·제한하는 조문은 none이 아니라 condition, parent_ref에 같은 조의 "제N항"도, 구분별 율·금액은 가장 큰 값+raw 나열, 공제 기간은 conditions의 `공제 기간`, 자격 취득 기한은 sunset·시작일은 applies_from, 주체가 여럿이면 모두. 이미 0.1로 뽑은 10배치(약 200건)는 다시 뽑지 않는다 | 첫 감사(Opus 50건): 문제 없음 36건(72%), 지적 18개 중 conditions·parent_ref·benefit_size·role·time_window 놓침이 반복(계통 오류). 결정 25의 "계통 오류면 skill을 고치고 전체 실행"을 적용 |
 
 ## 검토했다가 버린 대안
 
@@ -165,7 +166,7 @@ Mac(`/Users/chris/KLOE`)에서 OC 키로 실제 API를 호출해 확인했다.
 
 ## 현재 상태
 
-- 설계 v0.3. 아래 2부가 전문이다. 결정 16~29를 더했다. 2부의 평가(8절)와 로드맵(10절)은 결정 24에 맞춰 고쳤다.
+- 설계 v0.3. 아래 2부가 전문이다. 결정 16~30을 더했다. 2부의 평가(8절)와 로드맵(10절)은 결정 24에 맞춰 고쳤다.
 - 저장소: GitHub `Cr401/KLOE` (Mac의 `/Users/chris/KLOE`에 clone). DB: Mac Docker의 Postgres 16. 매일 03:00 launchd가 수집·가져오기·내보내기를 돈다.
 - **Phase 1 대부분 완료.** 남은 것: 연혁 수집, 부칙 파싱.
 - **Phase 2 진행 중.** 분류는 현행 조문 4,961건을 마쳤다 (true 2,414). skill 0.2로 위임 항 180건 재분류가 남았다 (`--recheck`, 결정 23). 추출 skill `kloe-extract` v0.1과 `kloe agent --stage extract`를 만들었고, 2,414건 추출을 돌릴 차례다.
@@ -482,7 +483,7 @@ opportunity는 덮어쓰지 않는다. 새 행을 만들고 이전 행의 `super
 | skill | 계층 | 내용 |
 |---|---|---|
 | `kloe-classify` (v0.2, 있음) | L1 | 혜택 조항 판정 기준, 유형 정의, 경계 사례 예시 |
-| `kloe-extract` (v0.1, 있음) | L1 | role 판정, 3.1 스키마, 인용 규칙, `uncertain` 사용 규칙 |
+| `kloe-extract` (v0.2, 있음) | L1 | role 판정, 3.1 스키마, 인용 규칙, `uncertain` 사용 규칙 |
 | `kloe-extract-program` (v0.1, 있음) | L1 | 공고 추출 (결정 19) |
 | `kloe-synthesize` (아직) | L2 | fact 묶기 규칙, substance·business_signal·time_signal 기준, G2·G5·G6 판정 기준, 순위 근거 작성법 |
 | `kloe-explore` (아직) | L3 | 카탈로그 탐색 방법, 검토 판정과 아이디어를 기록하는 명령 |
