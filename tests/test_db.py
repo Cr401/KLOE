@@ -1,6 +1,7 @@
 """Postgres 통합 테스트. KLOE_TEST_DATABASE_URL이 없으면 건너뛴다 (테스트가 public 스키마를 지운다)."""
 
 import os
+import re
 from datetime import date
 from pathlib import Path
 
@@ -168,6 +169,67 @@ def test_fact_links_view_and_dropped_jobs(conn, tmp_path):
     assert db.undrop(conn, "audit") == 1
     jobs = [j for p in cli.export_stage(conn, work, "audit", 50, 20) for j in qx.read_jsonl(p)]
     assert [j["article_key"] for j in jobs] == ["16-1"]
+
+
+def test_ideate_review_and_metrics(conn, tmp_path):
+    from kloe import ideas
+
+    work, reports = tmp_path / "work", tmp_path / "reports"
+    cli.load_files(conn, [FIX / "law_v1.xml", FIX / "decree_v1.xml"])
+    cli.link_law(conn, "테스트특례법")
+    drain(conn, work, "classify")
+    drain(conn, work, "extract")
+    cs = ideas.clusters(conn)
+    assert [c.key for c in cs] == ["테스트특례법 제16조", "테스트특례법 제17조"]
+    card = ideas.render_card(1, cs[0])
+    assert card.startswith("### C1 테스트특례법 제16조 [deduction] 율 10%") and "- fact:" in card
+
+    paths = cli.export_stage(conn, work, "ideate", 0, 1)
+    assert len(paths) == 4  # 렌즈마다 배치 하나
+    assert cli.export_stage(conn, work, "ideate", 0, 1) == []  # 대기 중인 렌즈는 다시 안 나감
+    job = qi.read_jsonl(paths[0])[0]
+    catalog = Path(job["catalog"]).read_text(encoding="utf-8")
+    assert "## 1. 전체 카드 (2장)" in catalog and "\"quotes\"" in catalog
+    for p in paths:
+        qi.claim(work, "ideate", p.name)
+        run_agent(work, "ideate", p.name)
+    reps = cli.ingest_stage(conn, work, "ideate")
+    assert all(r.ok for r in reps)
+    rows = {r["lens"]: r for r in conn.execute("select * from idea")}
+    assert set(rows) == {"combo", "gap", "business"}  # time은 일몰 근거가 없어 0건
+    assert len({e["id"] for e in rows["combo"]["evidence"]}) == 2
+
+    # 같은 근거로 다시 내면 중복으로 막힌다
+    conn.execute("delete from idea where lens = 'business'")
+    conn.execute("insert into idea (week, title, body, lens, evidence, evidence_hash, status) values ('x', 't', 'b', 'business', '[]', %s, 'proposed')",
+                 (rows["business"]["evidence_hash"],))
+    conn.commit()
+    [p] = cli.export_stage(conn, work, "ideate", 0, 1, lenses=("business",))  # 이번 주 business가 비어 다시 나감
+    qi.claim(work, "ideate", p.name)
+    run_agent(work, "ideate", p.name)
+    [rep] = cli.ingest_stage(conn, work, "ideate")
+    assert rep.ok and conn.execute("select count(*) as n from idea_duplicate").fetchone()["n"] == 1
+    conn.execute("delete from idea where week = 'x'")
+
+    path, n = ideas.write_review_file(conn, reports)
+    assert n == 2 and path.name.endswith(".review.md")
+    text = path.read_text(encoding="utf-8")
+    first, second = [int(x) for x in re.findall(r"^## idea:(\d+)", text, flags=re.M)]
+    text = text.replace("- [ ] keep", "- [x] keep", 1)
+    marks, broken = ideas.parse_review_file(text)
+    assert [m.idea_id for m in marks] == [first] and broken == []
+    # drop + wrong_fact 표시
+    text2 = text.split(f"## idea:{second}")[1].replace("- [ ] drop  사유:", "- [x] drop  사유: wrong_fact")
+    marks2, _ = ideas.parse_review_file(f"## idea:{second}" + text2)
+    assert db.store_review_marks(conn, marks + marks2) == (2, 0)
+    assert db.store_review_marks(conn, marks) == (0, 1)  # 이미 점검함
+    m = db.idea_metrics(conn)
+    assert m["status"] == {"approved": 1, "rejected": 1} and m["drop_tags"] == {"wrong_fact": 1}
+    assert m["wrong_fact_ids"] and m["batches"] == 5 and m["duplicates_blocked"] == 1
+
+    # 근거 fact가 stale이 되면 needs_recheck
+    conn.execute("update fact set status = 'stale' where stage = 'extract'")
+    assert db.recheck_ideas(conn) == 1  # approved 1건 (rejected는 그대로)
 
 
 def qx_first_job(work):

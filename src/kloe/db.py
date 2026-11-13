@@ -425,6 +425,87 @@ def undrop(conn, stage: str) -> int:
     return n
 
 
+# ---------- 아이디어 ----------
+
+def store_ideas(conn, job: dict, result, batch_id: int) -> int:
+    """검증 통과한 아이디어를 넣는다. 근거 집합(렌즈 포함)이 이미 있는 아이디어와 같으면 idea_duplicate에만 남긴다."""
+    from kloe.ideas import evidence_hash, evidence_of
+
+    n = 0
+    for idea in result.ideas:
+        ev = evidence_of(idea)
+        h = evidence_hash(job["lens"], ev)
+        cur = conn.execute(
+            """insert into idea (week, title, body, lens, summary, payload, evidence, evidence_hash, extractor, batch_id)
+               values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) on conflict (evidence_hash) do nothing""",
+            (job["week"], idea.title, idea.body, job["lens"], idea.summary,
+             Jsonb(idea.model_dump(mode="json", include={"claims", "to_check"})), Jsonb(ev), h, result.extractor, batch_id))
+        if cur.rowcount:
+            n += 1
+        else:
+            conn.execute("insert into idea_duplicate (evidence_hash, batch_id, title) values (%s, %s, %s)",
+                         (h, batch_id, idea.title))
+    return n
+
+
+def recheck_ideas(conn) -> int:
+    """근거 fact가 stale·rejected가 됐거나 조문이 현행이 아니면 아이디어를 needs_recheck로 (N3). 바꾼 수."""
+    n = conn.execute(
+        """update idea i set status = 'needs_recheck'
+           where i.status in ('proposed', 'approved')
+             and exists (select 1 from jsonb_array_elements(i.evidence) e
+                         left join fact f on f.id = (e->>'id')::bigint
+                         left join provision p on p.id = f.provision_id
+                         where e->>'kind' = 'fact'
+                           and (f.id is null or f.status <> 'verified' or p.effective_to is not null))""").rowcount
+    conn.commit()
+    return n
+
+
+def store_review_marks(conn, marks) -> tuple[int, int]:
+    """점검 표시를 review에 넣고 idea 상태를 바꾼다. 이미 점검한 아이디어는 건너뛴다. (넣은 수, 건너뛴 수)"""
+    done = skipped = 0
+    for m in marks:
+        if not conn.execute("select 1 from idea where id = %s", (m.idea_id,)).fetchone() or conn.execute(
+                "select 1 from review where target_kind = 'idea' and target_id = %s", (m.idea_id,)).fetchone():
+            skipped += 1
+            continue
+        conn.execute("insert into review (target_kind, target_id, verdict, note, diff) values ('idea', %s, %s, %s, %s)",
+                     (m.idea_id, m.verdict, m.note, Jsonb({"tags": m.tags})))
+        conn.execute("update idea set status = %s where id = %s",
+                     ("approved" if m.verdict == "approve" else "rejected", m.idea_id))
+        done += 1
+    conn.commit()
+    return done, skipped
+
+
+def idea_metrics(conn) -> dict:
+    """B6: 정답 없이 볼 수 있는 것만. keep 비율은 참고."""
+    q = lambda sql, *a: list(conn.execute(sql, a))  # noqa: E731
+    batches = q("""select count(*) as n, count(*) filter (where fail_reason like 'failed=%%') as failed
+                   from batch where stage = 'ideate' and ingested_at is not null""")[0]
+    return {
+        "batches": batches["n"], "batches_with_failures": batches["failed"],
+        "dropped_jobs": q("select count(*) as n from dropped_job where stage = 'ideate'")[0]["n"],
+        "by_week_lens": [(r["week"], r["lens"], r["n"]) for r in q(
+            "select week, lens, count(*) as n from idea group by 1, 2 order by 1, 2")],
+        "duplicates_blocked": q("select count(*) as n from idea_duplicate")[0]["n"],
+        "distinct_laws": q("""select count(distinct d.law_id) as n from idea i, jsonb_array_elements(i.evidence) e
+                              join fact f on f.id = (e->>'id')::bigint join provision p on p.id = f.provision_id
+                              join source_document d on d.id = p.document_id where e->>'kind' = 'fact'""")[0]["n"],
+        "distinct_facts": q("""select count(distinct e->>'id') as n from idea i, jsonb_array_elements(i.evidence) e
+                               where e->>'kind' = 'fact'""")[0]["n"],
+        "status": {r["status"]: r["n"] for r in q("select status, count(*) as n from idea group by 1")},
+        "drop_tags": {r["tag"]: r["n"] for r in q(
+            """select t as tag, count(*) as n from review r, jsonb_array_elements_text(coalesce(r.diff->'tags', '[]')) t
+               where r.target_kind = 'idea' group by 1 order by 2 desc""")},
+        "wrong_fact_ids": [r["id"] for r in q(  # 점검에서 wrong_fact가 붙은 아이디어의 근거 fact: L1 오류 후보
+            """select distinct (e->>'id')::bigint as id from review r join idea i on i.id = r.target_id,
+                      jsonb_array_elements(i.evidence) e
+               where r.target_kind = 'idea' and r.diff->'tags' ? 'wrong_fact' and e->>'kind' = 'fact' order by 1""")],
+    }
+
+
 def max_batch_number(conn, stage: str) -> int:
     """이 단계에 기록된 가장 큰 배치 번호. work/를 지워도 새 배치 이름이 옛 기록과 겹치지 않게 한다."""
     row = conn.execute(
@@ -450,6 +531,9 @@ def store_report(conn, report: IngestReport) -> int:
     batch_id = b["id"] if b else record_batch(conn, report.stage, report.batch)
     n = 0
     for job, result in report.accepted:
+        if report.stage == "ideate":
+            n += store_ideas(conn, job, result, batch_id)
+            continue
         if report.stage == "audit":
             cur = conn.execute(
                 """insert into audit (fact_id, batch_id, ok, payload, extractor)
@@ -481,7 +565,7 @@ def store_report(conn, report: IngestReport) -> int:
         )
         n += cur.rowcount
     # 같은 조문·해시·extractor 결과가 이미 있으면 넣지 않는다. extractor의 skill 이름이 단계마다 달라야 하는 이유.
-    duplicates = len(report.accepted) - n
+    duplicates = 0 if report.stage == "ideate" else len(report.accepted) - n
     parts = []
     if not report.ok:
         parts.append(f"failed={len(report.failed)} missing={len(report.missing)}")

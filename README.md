@@ -102,6 +102,25 @@ select law_name, article_key, role, benefit_type, rate, cap_krw, sunset from ext
 - 감사는 nightly가 자동으로 내보내지 않는다. 추출 시험 배치 뒤 한 번, 그다음은 extract skill 버전이 바뀔 때만 돌린다.
 - 지적이 한 필드에 몰리면(예: `benefit_size`의 `lost`) skill을 고치고 다시 추출할지 판단한다.
 
+## 아이디어와 점검 (kloe-ideate)
+
+시스템이 아이디어를 가져오고 사람은 점검만 한다. 정답 셋은 없다.
+
+```bash
+.venv/bin/kloe export --stage ideate                     # 렌즈 4개(combo 조합, time 시간, gap 허점, business 사업화)마다 배치 하나
+.venv/bin/kloe agent --stage ideate --model opus --parallel 1 --timeout 2400 --ingest
+.venv/bin/kloe review-file                               # reports/YYYY-Www.review.md
+# 파일에서 블록마다 keep 또는 drop에 x, drop이면 사유 태그(obvious, wrong_fact, infeasible, duplicate, other)
+.venv/bin/kloe review-ingest reports/2026-W47.review.md
+.venv/bin/kloe metrics                                   # 검증 실패, 처리량, 중복 차단, 근거 다양성, drop 사유
+```
+
+- 입력은 코드가 만든다. 혜택 fact가 있는 조마다 묶음(그 조의 fact + parent_ref로 그 조를 가리키는 요건 + 위임 대상 조문의 fact + 같은 조의 배제·추징)을 만들고, 묶음마다 몇 줄짜리 카드를 렌더한다 (저장하지 않음). 렌즈마다 전체 카드 + 코드가 고른 상세 묶음 8개(인용 포함)를 `work/claimed/ideate/catalog-<주>-<렌즈>.md` 로 쓴다. 내보낼 때 카탈로그 글자 수를 찍으니, 처음엔 이 크기부터 본다.
+- 검증: 주장마다 근거(`fact`, `program`, `delegation`, `change`)가 카탈로그에 있어야 하고, 인용은 근거 fact의 quotes 안에 글자 그대로, 율·한도는 근거 값과 같아야 한다. 조합은 서로 다른 묶음 2개 이상, 시간은 일몰이나 개정 이벤트, 허점은 위임 공백이 근거에 있어야 한다. 근거 집합이 이미 있는 아이디어와 같으면 넣지 않고 중복으로 센다.
+- 이번 주에 이미 아이디어를 낸 렌즈는 다시 내보내지 않는다. 한 렌즈만: `--lens time`.
+- 근거 fact가 stale이 되면(개정) 아이디어는 `needs_recheck` 가 되고 점검 파일에 ⚠로 다시 나온다.
+- 점검에서 `wrong_fact` 가 붙은 아이디어의 근거 fact는 `kloe metrics` 의 `wrong_fact_ids` 로 모인다 (추출 오류 후보).
+
 ## 지원사업·장학금·창업 공고 (보조금24, K-Startup)
 
 법령 말고 공고도 모은다 (설계 결정 18, 19). 공공데이터포털(data.go.kr)에서 아래 두 API를 **활용신청**하고, 마이페이지의 일반 인증키(Decoding)를 `~/.zshrc` 에 둔다.

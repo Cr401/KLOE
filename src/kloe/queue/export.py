@@ -19,7 +19,7 @@ from pathlib import Path
 
 STAGES = ("classify", "extract", "program", "audit", "ideate", "synthesize", "report")
 # 단계마다 job이 가리키는 대상의 키. program 단계는 조문이 아니라 공고 판(program_version)을 다룬다.
-TARGET_KEY = {"program": "version_id", "audit": "fact_id"}
+TARGET_KEY = {"program": "version_id", "audit": "fact_id", "ideate": "slot"}  # ideate slot = 연도·주·렌즈 번호
 STATES = ("queue", "claimed", "out", "done", "failed")
 DROPPED = "dropped.jsonl"  # 재시도까지 실패한 job. 다음 ingest/export가 DB(dropped_job)로 옮기고 DROPPED_LOG에 붙인다
 DROPPED_LOG = "dropped-log.jsonl"

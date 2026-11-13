@@ -6,7 +6,8 @@ import re
 from datetime import date
 
 from kloe.models import normalize_ws
-from kloe.schema import AuditResult, BenefitSize, ClassifyResult, ExtractResult, FactPayload, ProgramResult, Quote
+from kloe.schema import (AuditResult, BenefitSize, ClassifyResult, ExtractResult, FactPayload, IdeaItem, IdeateResult,
+                         ProgramResult, Quote)
 
 _BIG = {"조": 10**12, "억": 10**8, "만": 10**4}
 _SMALL = {"천": 1000, "백": 100, "십": 10}
@@ -132,7 +133,49 @@ def check_audit(result: AuditResult, source_text: str) -> list[str]:
     return errors
 
 
-def verify(result: ClassifyResult | ExtractResult | ProgramResult | AuditResult, job: dict) -> list[str]:
+def check_idea(idea: IdeaItem, lens: str, index: dict) -> list[str]:
+    """아이디어 기계 검증 (B3): 1) fact·공고 인용이 근거의 quotes 안에 글자 그대로 2) 수치가 근거 값과 같음
+    3) 렌즈별 근거 형태 4) 근거가 이 배치 카탈로그에 있음. 중복(evidence_hash)은 DB에 넣을 때 막는다.
+    index: job["index"] = {"fact:12": {"cluster": ..., "rate": ..., "cap_krw": ..., "sunset": ..., "quotes": [...]}, ...}"""
+    errors = []
+    quoted = 0
+    for c in idea.claims:
+        ref = f"{c.kind}:{c.id}"
+        ev = index.get(ref)
+        if ev is None:
+            errors.append(f"근거가 카탈로그에 없음: {ref}")
+            continue
+        if c.quote:
+            if not any(normalize_ws(c.quote) in normalize_ws(q) for q in ev.get("quotes", [])):
+                errors.append(f"인용이 근거의 quotes에 없음: {ref} {c.quote[:40]!r}")
+            else:
+                quoted += 1
+        if c.rate is not None and (ev.get("rate") is None or abs(float(ev["rate"]) - c.rate) > 1e-9):
+            errors.append(f"율이 근거와 다름: {ref} {c.rate} != {ev.get('rate')}")
+        if c.cap_krw is not None and ev.get("cap_krw") != c.cap_krw:
+            errors.append(f"한도가 근거와 다름: {ref} {c.cap_krw} != {ev.get('cap_krw')}")
+    if not quoted:
+        errors.append("인용으로 받친 주장이 하나도 없음 (상세 묶음이나 공고의 인용을 달 것)")
+    known = [index[f"{c.kind}:{c.id}"] | {"kind": c.kind} for c in idea.claims if f"{c.kind}:{c.id}" in index]
+    if lens == "combo" and len({e.get("cluster") for e in known}) < 2:
+        errors.append("조합 렌즈는 서로 다른 조문 묶음·공고 2개 이상을 근거로 해야 함")
+    if lens == "time" and not any(e.get("sunset") or e["kind"] == "change" for e in known):
+        errors.append("시간 렌즈는 일몰이 있는 fact나 개정 이벤트를 근거로 해야 함")
+    if lens == "gap" and not any(e["kind"] == "delegation" for e in known):
+        errors.append("허점 렌즈는 위임 공백(delegation) 근거가 있어야 함")
+    return errors
+
+
+def check_ideate(result: IdeateResult, job: dict) -> list[str]:
+    errors = []
+    for n, idea in enumerate(result.ideas, 1):
+        errors += [f"아이디어 {n}: {e}" for e in check_idea(idea, job["lens"], job["index"])]
+    return errors
+
+
+def verify(result: ClassifyResult | ExtractResult | ProgramResult | AuditResult | IdeateResult, job: dict) -> list[str]:
+    if isinstance(result, IdeateResult):
+        return check_ideate(result, job)
     text = job["text"]
     if isinstance(result, AuditResult):
         return check_audit(result, text)

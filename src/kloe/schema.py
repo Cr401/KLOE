@@ -192,5 +192,34 @@ class AuditResult(_Strict):
         return self
 
 
+# ---------- 아이디어 (kloe-ideate) ----------
+Lens = Literal["combo", "time", "gap", "business"]  # 조합 / 시간(일몰·개정) / 허점(위임 공백) / 사업화
+EvidenceKind = Literal["fact", "program", "delegation", "change"]
+
+
+class Claim(_Strict):
+    """아이디어를 받치는 주장 하나. fact·program 근거는 인용을 달고, 수치를 쓰면 근거의 값과 같아야 한다."""
+    text: str = Field(min_length=1)
+    kind: EvidenceKind
+    id: int
+    quote: str | None = None  # 근거 fact·공고의 quotes 중 하나에서 글자 그대로
+    rate: float | None = Field(default=None, ge=0, le=1)
+    cap_krw: int | None = Field(default=None, ge=0)
+
+
+class IdeaItem(_Strict):
+    title: str = Field(min_length=1, max_length=120)
+    summary: str = Field(min_length=1, max_length=300)  # 한 줄
+    body: str = Field(min_length=1)
+    claims: list[Claim] = Field(min_length=1)
+    to_check: list[str] = []  # 사람이 원문·실무로 확인할 것
+
+
+class IdeateResult(_Strict):
+    job_id: str
+    extractor: str = Field(pattern=EXTRACTOR_PATTERN)
+    ideas: list[IdeaItem] = Field(max_length=12)
+
+
 RESULT_MODELS: dict[str, type[BaseModel]] = {"classify": ClassifyResult, "extract": ExtractResult, "program": ProgramResult,
-                                             "audit": AuditResult}
+                                             "audit": AuditResult, "ideate": IdeateResult}

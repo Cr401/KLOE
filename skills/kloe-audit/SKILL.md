@@ -18,7 +18,7 @@ version: 0.1
 `fact` 의 필드 뜻은 `skills/kloe-extract/SKILL.md` 와 같다 (`role`, `benefit_type`, `beneficiary`, `trigger`,
 `benefit_size`, `conditions`, `exclusions`, `obligations`, `time_window`, `parent_ref`, `quotes`, `uncertain` 등).
 
-## 볼 것 (중요한 순서)
+## 판정 기준 (중요한 순서)
 
 1. **놓침 (`lost`)**: 원문은 공제·감면·비과세·지원 등 이익을 주거나 그 요건·한도·계산을 정하는데 `role` 이 `none` 이거나,
    원문에 있는 율·한도·기한·주요 요건·배제가 fact에 빠졌다. 이게 가장 비싼 오류다 (뒤 단계에서 되살릴 수 없다).

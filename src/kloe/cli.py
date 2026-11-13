@@ -118,7 +118,18 @@ def _exclude(conn, work_dir: Path, stage: str) -> set[int]:
 
 
 def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int, recheck: str | None = None,
-                 law_filter: str | None = None) -> list[Path]:
+                 law_filter: str | None = None, lenses: tuple[str, ...] | None = None) -> list[Path]:
+    if stage == "ideate":  # 렌즈마다 배치 하나. 이번 주 그 렌즈가 대기 중이거나 이미 아이디어를 냈으면 건너뛴다
+        from kloe import ideas
+
+        exclude = _exclude(conn, work_dir, stage)
+        week = ideas.week_of(date.today())
+        done = {r["lens"] for r in conn.execute("select distinct lens from idea where week = %s", (week,))}
+        todo = tuple(lz for lz in (lenses or ideas.LENSES) if lz not in done and ideas.slot(week, lz) not in exclude)
+        jobs = ideas.build_ideate(conn, work_dir, lenses=todo) if todo else []
+        for j in jobs:
+            print(f"ideate {j['lens']}: 카드 {j['n_cards']}장, 상세 {len(j['detail'])}개, 카탈로그 {j['catalog_chars']:,}자")
+        return _write_batches(conn, work_dir, stage, jobs, 1)
     if stage == "audit":
         rows = db.export_audit_candidates(conn, limit, _exclude(conn, work_dir, stage), law_filter)
         return _write_batches(conn, work_dir, stage, [
@@ -195,12 +206,13 @@ def cmd_export(args) -> int:
     with db.connect(args.db) as conn:
         recheck = qr.SKILL_VERSION["classify"] if args.recheck else None
         limit = args.limit if args.limit is not None else (50 if args.stage == "audit" else 5000)
-        export_stage(conn, work_dir, args.stage, limit, args.batch_size, recheck, args.law_filter)
+        export_stage(conn, work_dir, args.stage, limit, args.batch_size, recheck, args.law_filter,
+                     tuple(args.lens) if args.lens else None)
     return 0
 
 
-STAGES = ("classify", "extract", "program", "audit")  # 가져오기·되돌리기·상태 보기 대상
-AUTO_EXPORT = ("classify", "extract", "program")  # nightly가 자동으로 내보내는 단계. 감사는 손으로만
+STAGES = ("classify", "extract", "program", "audit", "ideate")  # 가져오기·되돌리기·상태 보기 대상
+AUTO_EXPORT = ("classify", "extract", "program")  # nightly가 자동으로 내보내는 단계. 감사·아이디어는 손으로만
 
 
 def cmd_fetch_programs(args) -> int:
@@ -278,6 +290,8 @@ def status_line(conn, work_dir: Path) -> str:
         """select payload->>'stage' as stage, count(*) as n from fact where status = 'verified' group by 1""")}
     verified["program"] = conn.execute(
         "select count(*) as n from program_fact where status = 'verified'").fetchone()["n"]
+    verified["audit"] = conn.execute("select count(*) as n from audit").fetchone()["n"]
+    verified["ideate"] = conn.execute("select count(*) as n from idea where evidence_hash is not null").fetchone()["n"]
     dropped = {r["stage"]: r["n"] for r in conn.execute("select stage, count(*) as n from dropped_job group by 1")}
     parts = []
     for stage in STAGES:
@@ -317,6 +331,34 @@ def write_audit_report(conn, reports_dir: Path) -> Path:
     return path
 
 
+def cmd_review_file(args) -> int:
+    from kloe import ideas
+
+    with db.connect(args.db) as conn:
+        n = db.recheck_ideas(conn)
+        path, blocks = ideas.write_review_file(conn, Path(args.reports_dir))
+        print(f"{path} ({blocks}건, 근거가 바뀐 아이디어 {n}건 표시)")
+    return 0
+
+
+def cmd_review_ingest(args) -> int:
+    from kloe import ideas
+
+    marks, broken = ideas.parse_review_file(Path(args.file).read_text(encoding="utf-8"))
+    with db.connect(args.db) as conn:
+        done, skipped = db.store_review_marks(conn, marks)
+    print(f"review: {done}건 기록, {skipped}건 건너뜀(이미 점검함), 깨진 블록 {len(broken)}건")
+    for b in broken:
+        print(f"  {b}", file=sys.stderr)
+    return 0
+
+
+def cmd_metrics(args) -> int:
+    with db.connect(args.db) as conn:
+        print(json.dumps(db.idea_metrics(conn), ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
 def cmd_audit_report(args) -> int:
     with db.connect(args.db) as conn:
         print(write_audit_report(conn, Path(args.reports_dir)))
@@ -346,6 +388,7 @@ def cmd_nightly(args) -> int:
         for stage in STAGES:
             ingest_stage(conn, work_dir, stage)
         print(f"linked facts: {db.link_facts(conn)} parent_ref links")
+        print(f"ideas needing recheck: {db.recheck_ideas(conn)}")
         for stage in AUTO_EXPORT:
             export_stage(conn, work_dir, stage, args.limit, args.batch_size)
     return 0
@@ -386,6 +429,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--stage", choices=STAGES, required=True)
     p.add_argument("--limit", type=int, default=None, help="최대 job 수 (기본 5000, audit는 표본 50)")
     p.add_argument("--law-filter", default=None, help="audit만: 법령명에 이 글자가 든 조문만 (예: 시행)")
+    p.add_argument("--lens", action="append", choices=("combo", "time", "gap", "business"),
+                   help="ideate만: 이 렌즈만 (여러 번 줄 수 있음. 기본 4개 전부)")
     p.add_argument("--batch-size", type=int, default=20)
     p.add_argument("--recheck", action="store_true",
                    help="classify만: false로 분류된 위임 항 중 같은 조에 true가 있는 것을 현재 skill 버전으로 다시 분류")
@@ -417,6 +462,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_agent)
 
     sub.add_parser("status", help="단계별 대기 배치 수와 verified 수 한 줄").set_defaults(func=cmd_status)
+
+    p = sub.add_parser("review-file", help="점검 안 한 아이디어를 reports/YYYY-Www.review.md 로")
+    p.add_argument("--reports-dir", default=str(ROOT / "reports"))
+    p.set_defaults(func=cmd_review_file)
+
+    p = sub.add_parser("review-ingest", help="점검 파일의 keep/drop 표시를 기록")
+    p.add_argument("file")
+    p.set_defaults(func=cmd_review_ingest)
+
+    p = sub.add_parser("metrics", help="아이디어 지표 (검증 실패, 처리량, 중복 차단, 근거 다양성, drop 사유)")
+    p.set_defaults(func=cmd_metrics)
 
     p = sub.add_parser("audit-report", help="추출 감사 결과를 reports/audit-<날짜>.md 로")
     p.add_argument("--reports-dir", default=str(ROOT / "reports"))
