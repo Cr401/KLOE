@@ -51,8 +51,11 @@ def test_wrong_rate_and_cap():
 def test_expired_sunset_is_recorded_not_rejected():
     # 결정 21: 일몰이 지난 특례도 본문이 남아 있으면 기록한다
     assert verify(result(time_window={"sunset": "2025-12-31"}), JOB) == []
-    errs = verify(result(time_window={"sunset": "2025-12-31", "effective_from": "2026-01-01"}), JOB)
+    errs = verify(result(time_window={"sunset": "2025-12-31", "effective_from": "2026-03-01"}), JOB)
     assert any("일몰" in e for e in errs)  # 자기 모순은 여전히 실패
+    # 조문 시행일을 time_window.effective_from에 그대로 넣은 경우는 받는다
+    same = verify(result(time_window={"sunset": "2025-12-31", "effective_from": JOB["effective_from"]}), JOB)
+    assert not any("일몰" in e for e in same)
 
 
 def test_schema_rules():

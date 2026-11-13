@@ -110,8 +110,10 @@ def check_time_window(result: ExtractResult, effective_from: date) -> list[str]:
     if tw is None:
         return []
     # 일몰이 지난 특례도 현행 법령에 본문이 남아 있으면 그대로 기록한다 (결정 21). 지났는지는 조회할 때 본다.
+    # 모델이 time_window.effective_from에 조문 시행일(이 판의 시행일)을 그대로 넣고 sunset에 이미 지난 일몰을 넣는 것은
+    # 모순이 아니다 (같은 이유). 2026-11-13 전체 추출에서 이 경우로 떨어진 것이 가장 많았다. 그 밖의 앞뒤 뒤집힘만 실패.
     errors = []
-    if tw.sunset and tw.effective_from and tw.sunset < tw.effective_from:
+    if tw.sunset and tw.effective_from and tw.sunset < tw.effective_from and tw.effective_from != effective_from:
         errors.append("일몰이 time_window.effective_from보다 앞섬")
     return errors
 
