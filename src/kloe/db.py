@@ -250,31 +250,46 @@ def store_programs(conn, records: list[ProgramRecord], *, file_path: str, sha256
     return new_programs, new_versions
 
 
+# 소스의 가장 최근 수집보다 이만큼 앞서 마지막으로 보인 공고는 목록에서 사라진 것으로 본다 (K-Startup은 모집중만 준다).
+# 수집이 며칠 실패해도 소스별 최근 수집 기준이라 전부 퇴출되지는 않는다.
+RETIRE_AFTER = "3 days"
+
+_LIVE = f"""(p.apply_end is null or p.apply_end >= %(today)s)
+   and p.last_seen >= (select max(q.last_seen) from program q where q.source = p.source) - interval '{RETIRE_AFTER}'"""
+
+# 내보내기 순서: K-Startup(적고 마감이 분명) → 마감일 있는 것(이른 순) → 지원유형(현금·감면·융자 → 이용권·현물 → 나머지).
+# 거르지 않고 순서만 정한다. 지원유형 순위는 이득이 큰 쪽을 먼저 보려는 추정이다.
+_PROGRAM_ORDER = r"""
+   (p.source <> 'kstartup'), (p.apply_end is null), p.apply_end,
+   case when v.text ~ '지원유형: [^\n]*(현금|감면|융자|세제)' then 0
+        when v.text ~ '지원유형: [^\n]*(이용권|현물)' then 1 else 2 end,
+   v.id"""
+
+
 def export_program_candidates(conn, limit: int, exclude: set[int], today: date | None = None) -> list[dict]:
-    """현행 판 중 마감이 안 지났고(마감 미상 포함) 추출 fact가 없는 것."""
+    """현행 판 중 마감이 안 지났고(마감 미상 포함), 목록에서 사라지지 않았고, 추출 fact가 없는 것."""
     rows = conn.execute(
-        """select v.id as version_id, v.text, v.text_hash, p.source, p.title, p.apply_end
+        f"""select v.id as version_id, v.text, v.text_hash, p.source, p.title, p.apply_end
            from program_version v join program p on p.id = v.program_id
-           where v.superseded_at is null
-             and (p.apply_end is null or p.apply_end >= %s)
+           where v.superseded_at is null and {_LIVE}
              and not exists (select 1 from program_fact f where f.version_id = v.id and f.status <> 'rejected')
-           order by v.id""",
-        (today or date.today(),),
+           order by {_PROGRAM_ORDER}""",
+        {"today": today or date.today()},
     )
     return [r for r in rows if r["version_id"] not in exclude][:limit]
 
 
 def open_programs(conn, today: date | None = None) -> list[dict]:
-    """마감 전 공고와 추출 결과 (kloe programs)."""
+    """마감 전이고 목록에서 사라지지 않은 공고와 추출 결과 (kloe programs)."""
     return list(conn.execute(
-        """select p.source, p.external_id, p.title, p.agency, p.apply_end, p.url, f.payload
+        f"""select p.source, p.external_id, p.title, p.agency, p.apply_end, p.url, f.payload
            from program p
            join program_version v on v.program_id = p.id and v.superseded_at is null
            left join lateral (select payload from program_fact pf where pf.version_id = v.id and pf.status = 'verified'
                               order by pf.id desc limit 1) f on true
-           where p.apply_end is null or p.apply_end >= %s
+           where {_LIVE}
            order by p.apply_end nulls last, p.id""",
-        (today or date.today(),),
+        {"today": today or date.today()},
     ))
 
 

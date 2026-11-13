@@ -209,7 +209,9 @@ def test_programs_end_to_end(conn, tmp_path, monkeypatch):
     # 마감 지난 공고(2025년)는 내보내지 않는다
     paths = cli.export_stage(conn, work, "program", limit=100, batch_size=10)
     jobs = qi.read_jsonl(paths[0])
-    assert sorted(j["title"] for j in jobs) == ["2027년 테스트 예비창업패키지 모집", "테스트 대학생 장학금", "테스트 청년 월세 지원"]
+    # 순서: K-Startup → 마감일 있는 것 → 나머지
+    assert [j["title"] for j in jobs] == ["2027년 테스트 예비창업패키지 모집", "테스트 청년 월세 지원", "테스트 대학생 장학금"]
+    assert not any("문의처" in j["text"] or "구비서류" in j["text"] for j in jobs)
     assert cli.export_stage(conn, work, "program", 100, 10) == []  # 이미 나간 것은 다시 안 나감
 
     qi.claim(work, "program", paths[0].name)
@@ -219,6 +221,10 @@ def test_programs_end_to_end(conn, tmp_path, monkeypatch):
     assert conn.execute("select count(*) as n from program_fact where status = 'verified'").fetchone()["n"] == 3
     assert cli.export_stage(conn, work, "program", 100, 10) == []
     assert len(db.open_programs(conn)) == 3
+    # 같은 소스의 최근 수집보다 3일 넘게 안 보인 공고는 퇴출 (목록에서 사라짐)
+    conn.execute("update program set last_seen = last_seen - interval '4 days' where title = '테스트 대학생 장학금'")
+    assert len(db.open_programs(conn)) == 2
+    conn.execute("update program set last_seen = last_seen + interval '4 days' where title = '테스트 대학생 장학금'")
 
     basis = list(conn.execute("select basis, law_id from program_law_basis"))
     assert sorted((b["basis"], b["law_id"]) for b in basis) == [
