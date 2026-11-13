@@ -6,7 +6,7 @@ import re
 from datetime import date
 
 from kloe.models import normalize_ws
-from kloe.schema import BenefitSize, ClassifyResult, ExtractResult, ProgramResult, Quote
+from kloe.schema import AuditResult, BenefitSize, ClassifyResult, ExtractResult, FactPayload, ProgramResult, Quote
 
 _BIG = {"조": 10**12, "억": 10**8, "만": 10**4}
 _SMALL = {"천": 1000, "백": 100, "십": 10}
@@ -120,8 +120,22 @@ def check_legal_basis(basis: list[str], source_text: str) -> list[str]:
     return [f"근거법령이 원문에 없음: {b[:40]!r}" for b in basis if normalize_ws(b) not in src]
 
 
-def verify(result: ClassifyResult | ExtractResult | ProgramResult, job: dict) -> list[str]:
+def check_audit(result: AuditResult, source_text: str) -> list[str]:
+    """지적마다 근거 인용이 조문 원문에 있고, 필드 이름이 실제 fact 필드인지 본다. 인용 없는 지적은 받지 않는다."""
+    src = normalize_ws(source_text)
+    errors = []
+    for i in result.issues:
+        if i.field.split(".", 1)[0] not in FactPayload.model_fields:
+            errors.append(f"감사 지적의 필드가 fact에 없음: {i.field!r}")
+        if normalize_ws(i.quote) not in src:
+            errors.append(f"감사 지적의 인용이 원문에 없음: field={i.field} quote={i.quote[:40]!r}")
+    return errors
+
+
+def verify(result: ClassifyResult | ExtractResult | ProgramResult | AuditResult, job: dict) -> list[str]:
     text = job["text"]
+    if isinstance(result, AuditResult):
+        return check_audit(result, text)
     if isinstance(result, ClassifyResult):
         return check_quotes(result.quotes, text)
     if isinstance(result, ProgramResult):

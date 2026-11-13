@@ -109,6 +109,27 @@ def test_carry_facts_for_results_ingested_after_new_version(conn, tmp_path):
     assert [j["article_key"] for p in again for j in qi.read_jsonl(p)] == ["16-1"]
 
 
+def test_audit_samples_extract_facts_and_reports(conn, tmp_path):
+    work = tmp_path / "work"
+    cli.load_files(conn, [FIX / "law_v1.xml", FIX / "decree_v1.xml"])
+    cli.link_law(conn, "테스트특례법")
+    drain(conn, work, "classify")
+    drain(conn, work, "extract")
+    paths = cli.export_stage(conn, work, "audit", limit=50, batch_size=20)
+    jobs = [j for p in paths for j in qi.read_jsonl(p)]
+    assert {j["article_key"] for j in jobs} == {"16-1", "17-1"} and all("fact" in j for j in jobs)
+    assert cli.export_stage(conn, work, "audit", 50, 20) == []  # 대기 중인 것은 다시 안 나감
+    for p in paths:
+        qi.claim(work, "audit", p.name)
+        run_agent(work, "audit", p.name)
+    [rep] = cli.ingest_stage(conn, work, "audit")
+    assert rep.ok
+    assert cli.export_stage(conn, work, "audit", 50, 20) == []  # 이미 감사함
+    report = cli.write_audit_report(conn, tmp_path / "reports").read_text(encoding="utf-8")
+    assert "감사한 fact 2건, 문제 없음 1건" in report
+    assert "| benefit_size | 1 | 0 | 0 |" in report and "공제한도는 3천만원" in report
+
+
 def qx_first_job(work):
     from kloe.queue.export import read_jsonl, stage_dir
 

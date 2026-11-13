@@ -164,4 +164,33 @@ class ProgramResult(_Strict):
     fact: ProgramPayload
 
 
-RESULT_MODELS: dict[str, type[BaseModel]] = {"classify": ClassifyResult, "extract": ExtractResult, "program": ProgramResult}
+# ---------- 추출 감사 (kloe-audit) ----------
+# 정답 셋이 없으므로, 상위 모델이 추출 표본을 원문과 다시 대조해 계통 오류를 찾는다. fact는 고치지 않는다.
+AuditDirection = Literal["lost", "wrong", "extra"]  # lost: 혜택·요건·한도를 놓침 / wrong: 값·분류가 틀림 / extra: 원문에 없는 것을 넣음
+
+
+class AuditIssue(_Strict):
+    field: str  # FactPayload 필드 이름. 하위 필드는 점 표기 (benefit_size.rate)
+    direction: AuditDirection
+    problem: str = Field(min_length=1)
+    quote: str = Field(min_length=1)  # 지적의 근거가 되는 조문 원문 구간 (글자 그대로)
+    suggested: str | None = None
+
+
+class AuditResult(_Strict):
+    job_id: str
+    extractor: str = Field(pattern=EXTRACTOR_PATTERN)
+    ok: bool
+    issues: list[AuditIssue] = []
+
+    @model_validator(mode="after")
+    def _ok_matches_issues(self) -> AuditResult:
+        if self.ok and self.issues:
+            raise ValueError("ok=true인데 issues가 있다")
+        if not self.ok and not self.issues:
+            raise ValueError("ok=false인데 issues가 없다")
+        return self
+
+
+RESULT_MODELS: dict[str, type[BaseModel]] = {"classify": ClassifyResult, "extract": ExtractResult, "program": ProgramResult,
+                                             "audit": AuditResult}

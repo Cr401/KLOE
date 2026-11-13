@@ -61,3 +61,20 @@ def test_role_rules():
     with pytest.raises(ValueError):
         FactPayload.model_validate({"is_benefit": False, "role": "condition"})
     FactPayload.model_validate({"is_benefit": False, "role": "none", "not_benefit_reason": "위임만"})
+
+
+def test_audit_examples_match_schema_and_verify():
+    from kloe.schema import AuditResult
+    from kloe.verify import verify
+
+    md = (SKILLS / "kloe-audit" / "SKILL.md").read_text(encoding="utf-8")
+    examples = _json_blocks(md)
+    version = re.search(r"^version: (\S+)$", md, flags=re.M).group(1)
+    assert SKILL_VERSION["audit"] == version and len(examples) == 2
+    for ex in examples:
+        r = AuditResult.model_validate(ex)
+        assert ex["extractor"].endswith(f"kloe-audit@{version}")
+        text = " ".join(i.quote for i in r.issues) or "원문"
+        assert verify(r, {"text": text}) == []
+    bad = AuditResult.model_validate({**examples[0], "issues": [{**examples[0]["issues"][0], "field": "없는필드"}]})
+    assert verify(bad, {"text": examples[0]["issues"][0]["quote"]})

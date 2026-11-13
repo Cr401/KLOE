@@ -117,7 +117,16 @@ def fetch_programs(conn, raw_dir: Path, sources: list[str], *, max_pages: int = 
     return total_p, total_v
 
 
-def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int, recheck: str | None = None) -> list[Path]:
+def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int, recheck: str | None = None,
+                 law_filter: str | None = None) -> list[Path]:
+    if stage == "audit":
+        rows = db.export_audit_candidates(conn, limit, qx.in_flight_provision_ids(work_dir, stage), law_filter)
+        return _write_batches(conn, work_dir, stage, [
+            qx.make_audit_job(fact_id=r["fact_id"], text_hash=r["text_hash"], law_name=r["law_name"],
+                              article_key=r["article_key"], text=r["text"],
+                              fact={k: v for k, v in r["payload"].items() if k != "stage"})
+            for r in rows
+        ], batch_size)
     if stage == "program":
         rows = db.export_program_candidates(conn, limit, qx.in_flight_provision_ids(work_dir, stage))
         return _write_batches(conn, work_dir, stage, [
@@ -184,11 +193,13 @@ def cmd_export(args) -> int:
     work_dir, _ = _paths(args)
     with db.connect(args.db) as conn:
         recheck = qr.SKILL_VERSION["classify"] if args.recheck else None
-        export_stage(conn, work_dir, args.stage, args.limit, args.batch_size, recheck)
+        limit = args.limit if args.limit is not None else (50 if args.stage == "audit" else 5000)
+        export_stage(conn, work_dir, args.stage, limit, args.batch_size, recheck, args.law_filter)
     return 0
 
 
-STAGES = ("classify", "extract", "program")
+STAGES = ("classify", "extract", "program", "audit")  # 가져오기·되돌리기·상태 보기 대상
+AUTO_EXPORT = ("classify", "extract", "program")  # nightly가 자동으로 내보내는 단계. 감사는 손으로만
 
 
 def cmd_fetch_programs(args) -> int:
@@ -269,6 +280,33 @@ def cmd_status(args) -> int:
     return 0
 
 
+def write_audit_report(conn, reports_dir: Path) -> Path:
+    s = db.audit_summary(conn)
+    lines = [f"# 추출 감사 {date.today().isoformat()}", "",
+             f"감사한 fact {s['total']}건, 문제 없음 {s['ok']}건. 감사 모델: {', '.join(s['extractors']) or '없음'}.",
+             "fact는 고치지 않았다. 계통 오류(같은 필드·방향이 반복)가 보이면 kloe-extract skill을 고친다.", "",
+             "## 필드별 지적", "", "| 필드 | lost (놓침) | wrong (틀림) | extra (지어냄) |", "| --- | --- | --- | --- |"]
+    for field in sorted({f for f, _ in s["by_field"]}):
+        c = [s["by_field"].get((field, d), 0) for d in ("lost", "wrong", "extra")]
+        lines.append(f"| {field} | {c[0]} | {c[1]} | {c[2]} |")
+    lines += ["", "## 놓친 것 (lost)", ""]
+    for i in s["lost"] or []:
+        lines.append(f"- {i['law_name']} {i['article_key']} (role={i['role']}) `{i['field']}`: {i['problem']}"
+                     f" — 원문: \"{i['quote']}\"")
+    if not s["lost"]:
+        lines.append("없음.")
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    path = reports_dir / f"audit-{date.today().isoformat()}.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def cmd_audit_report(args) -> int:
+    with db.connect(args.db) as conn:
+        print(write_audit_report(conn, Path(args.reports_dir)))
+    return 0
+
+
 def cmd_show(args) -> int:
     with db.connect(args.db) as conn:
         for r in db.provisions_as_of(conn, args.law_id, date.fromisoformat(args.as_of)):
@@ -291,7 +329,7 @@ def cmd_nightly(args) -> int:
                 print(f"공고 수집 건너뜀 ({source}): {e}", file=sys.stderr)
         for stage in STAGES:
             ingest_stage(conn, work_dir, stage)
-        for stage in STAGES:
+        for stage in AUTO_EXPORT:
             export_stage(conn, work_dir, stage, args.limit, args.batch_size)
     return 0
 
@@ -329,7 +367,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("export", help="배치 파일 내보내기")
     p.add_argument("--stage", choices=STAGES, required=True)
-    p.add_argument("--limit", type=int, default=5000)
+    p.add_argument("--limit", type=int, default=None, help="최대 job 수 (기본 5000, audit는 표본 50)")
+    p.add_argument("--law-filter", default=None, help="audit만: 법령명에 이 글자가 든 조문만 (예: 시행)")
     p.add_argument("--batch-size", type=int, default=20)
     p.add_argument("--recheck", action="store_true",
                    help="classify만: false로 분류된 위임 항 중 같은 조에 true가 있는 것을 현재 skill 버전으로 다시 분류")
@@ -354,6 +393,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_agent)
 
     sub.add_parser("status", help="단계별 대기 배치 수와 verified 수 한 줄").set_defaults(func=cmd_status)
+
+    p = sub.add_parser("audit-report", help="추출 감사 결과를 reports/audit-<날짜>.md 로")
+    p.add_argument("--reports-dir", default=str(ROOT / "reports"))
+    p.set_defaults(func=cmd_audit_report)
 
     p = sub.add_parser("show", help="기준일 조문 재현")
     p.add_argument("--law-id", required=True)

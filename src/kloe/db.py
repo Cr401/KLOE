@@ -240,6 +240,57 @@ def open_programs(conn, today: date | None = None) -> list[dict]:
     ))
 
 
+# ---------- 추출 감사 ----------
+
+# 표본 층: role별로 같은 몫 + uncertain이 있는 것 조금. 합이 1.
+AUDIT_STRATA = (("none", 0.3), ("condition", 0.3), ("benefit", 0.3), ("uncertain", 0.1))
+
+
+def export_audit_candidates(conn, sample: int, exclude: set[int], law_filter: str | None = None) -> list[dict]:
+    """감사 표본: 현행 조문의 verified 추출 fact 중 아직 감사하지 않은 것을 층마다 골고루 고른다.
+    순서는 md5(fact id)라 실행마다 같고, 먼저 적재된 법령에 몰리지 않는다. law_filter는 법령명 부분 문자열 (예: 시행)."""
+    rows = list(conn.execute(
+        """select f.id as fact_id, f.text_hash, f.payload, p.article_key, p.text, d.law_name
+           from fact f join provision p on p.id = f.provision_id join source_document d on d.id = p.document_id
+           where f.status = 'verified' and f.payload->>'stage' = 'extract' and p.effective_to is null
+             and p.text_hash = f.text_hash and f.carried_from is null
+             and not exists (select 1 from audit a where a.fact_id = f.id)
+             and (%(lf)s::text is null or position(%(lf)s::text in d.law_name) > 0)
+           order by md5(f.id::text)""",
+        {"lf": law_filter}))
+    rows = [r for r in rows if r["fact_id"] not in exclude]
+
+    def stratum(r):
+        if r["payload"].get("uncertain"):
+            return "uncertain"
+        return r["payload"].get("role") or "benefit"
+
+    picked: list[dict] = []
+    for name, share in AUDIT_STRATA:
+        picked += [r for r in rows if stratum(r) == name][: round(sample * share)]
+    rest = [r for r in rows if r not in picked]  # 어떤 층이 모자라면 남은 것으로 채운다
+    return (picked + rest)[:sample]
+
+
+def audit_summary(conn) -> dict:
+    """감사 결과 집계: 전체·ok 수, 필드×방향별 지적 수, 놓친(lost) 지적 목록."""
+    rows = list(conn.execute(
+        """select a.ok, a.payload, a.extractor, p.article_key, d.law_name, f.payload as fact
+           from audit a join fact f on f.id = a.fact_id join provision p on p.id = f.provision_id
+           join source_document d on d.id = p.document_id order by d.law_name, p.id"""))
+    by_field: dict[tuple[str, str], int] = {}
+    lost = []
+    for r in rows:
+        for i in r["payload"].get("issues", []):
+            key = (i["field"].split(".", 1)[0], i["direction"])
+            by_field[key] = by_field.get(key, 0) + 1
+            if i["direction"] == "lost":
+                lost.append({"law_name": r["law_name"], "article_key": r["article_key"],
+                             "role": r["fact"].get("role"), **i})
+    return {"total": len(rows), "ok": sum(r["ok"] for r in rows), "by_field": by_field, "lost": lost,
+            "extractors": sorted({r["extractor"] for r in rows})}
+
+
 # ---------- 배치 ----------
 
 def export_candidates(conn, stage: str, limit: int, exclude: set[int], recheck: str | None = None) -> list[dict]:
@@ -313,6 +364,15 @@ def store_report(conn, report: IngestReport) -> int:
     batch_id = b["id"] if b else record_batch(conn, report.stage, report.batch)
     n = 0
     for job, result in report.accepted:
+        if report.stage == "audit":
+            cur = conn.execute(
+                """insert into audit (fact_id, batch_id, ok, payload, extractor)
+                   values (%s, %s, %s, %s, %s) on conflict (fact_id, extractor) do nothing""",
+                (job["fact_id"], batch_id, result.ok,
+                 Jsonb(result.model_dump(mode="json", exclude={"job_id", "extractor"})), result.extractor),
+            )
+            n += cur.rowcount
+            continue
         if report.stage == "program":
             cur = conn.execute(
                 """insert into program_fact (version_id, batch_id, payload, status, extractor)

@@ -78,6 +78,20 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 - 현재 skill 버전의 결과가 이미 있는 조문은 다시 나가지 않는다. 0.1 결과와 0.2 결과가 같이 남고, extract는 둘 중 하나라도 `true`면 그 조문을 내보낸다.
 - 사용량 한도가 걱정되면 `--parallel`과 `--max-batches`를 줄인다.
 
+### 추출 감사 (kloe-audit)
+
+정답 셋 없이 추출 품질을 보는 방법이다. 상위 모델이 검증을 통과한 추출 결과 표본을 원문과 다시 대조해, 놓친 혜택(`lost`)·틀린 값(`wrong`)·지어낸 내용(`extra`)을 필드와 원문 인용으로 지적한다. fact는 고치지 않고 표만 남긴다.
+
+```bash
+.venv/bin/kloe export --stage audit                       # 기본 50건, role(none·condition·benefit 30%씩, uncertain 10%)으로 층화
+.venv/bin/kloe agent --stage audit --model opus --parallel 1 --ingest
+.venv/bin/kloe audit-report                               # reports/audit-<날짜>.md: 필드별 lost·wrong·extra 수, 놓친 것 목록
+```
+
+- 이어받은 fact는 표본에서 뺀다. 한 번 감사한 fact는 다시 나가지 않는다. 특정 법령만 보려면 `--law-filter 조세특례제한법`.
+- 감사는 nightly가 자동으로 내보내지 않는다. 추출 시험 배치 뒤 한 번, 그다음은 extract skill 버전이 바뀔 때만 돌린다.
+- 지적이 한 필드에 몰리면(예: `benefit_size`의 `lost`) skill을 고치고 다시 추출할지 판단한다.
+
 ## 지원사업·장학금·창업 공고 (보조금24, K-Startup)
 
 법령 말고 공고도 모은다 (설계 결정 18, 19). 공공데이터포털(data.go.kr)에서 아래 두 API를 **활용신청**하고, 마이페이지의 일반 인증키(Decoding)를 `~/.zshrc` 에 둔다.
