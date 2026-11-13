@@ -64,7 +64,7 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 - `claude`가 PATH에 없거나(nvm 등) launchd에서 돌릴 때는 `KLOE_CLAUDE_BIN`에 전체 경로를 넣는다.
 - 실패한 배치(종료 코드 오류, 결과 없음, 줄 수 불일치, 시간 초과)는 queue로 돌아가고 같은 실행 안에서는 다시 잡지 않는다.
 - 에이전트는 `work/claimed/`와 `skills/`만 읽고 `work/out/`에만 쓸 수 있다 (공고 본문에 섞인 지시로 저장소 파일을 고치지 못하게).
-- 검증에서 두 번 실패한 job은 `work/failed/<stage>/dropped.jsonl`에 남고 다시 내보내지 않는다. 다시 돌리려면 그 파일을 지운다.
+- 검증에서 두 번 실패한 job은 DB의 `dropped_job`에 이유와 함께 남고 (같은 본문이면) 다시 내보내지 않는다. 기록은 `work/failed/<stage>/dropped-log.jsonl`. 다시 돌리려면 `.venv/bin/kloe undrop --stage extract`.
 - extractor는 `cc:<모델>:<skill>@<버전>`. 검증은 그대로 `kloe ingest`가 한다.
 
 ### classify 다시 돌리기 (skill을 고쳤을 때)
@@ -77,6 +77,16 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 - 법령 개정판이 들어와도 본문이 같은 조문은 이전 결과(fact)를 이어받아 다시 나가지 않는다 (`fact.carried_from`). 본문이 바뀐 조문만 다시 분류·추출된다.
 - 현재 skill 버전의 결과가 이미 있는 조문은 다시 나가지 않는다. 0.1 결과와 0.2 결과가 같이 남고, extract는 둘 중 하나라도 `true`면 그 조문을 내보낸다.
 - 사용량 한도가 걱정되면 `--parallel`과 `--max-batches`를 줄인다.
+
+### 조문 잇기와 조회
+
+- 위임: 법률의 "대통령령/○○부령으로 정하는 …"을 시행령·시행규칙으로, 시행령의 "○○부령으로 정하는 …"을 시행규칙("영 제N조")으로 잇는다. 같은 항을 콕 집어 가리키는 하위 조문이 여럿이면 모두 잇는다.
+- 추출 결과의 `parent_ref`("법 제29조의4제1항", "영 제10조", "제2항")는 nightly가 현행 조문으로 풀어 `fact_link`에 넣는다. 손으로는 `.venv/bin/kloe link-facts`.
+- 추출 결과를 SQL로 볼 때는 `extract_fact` 뷰 (현행 조문의 verified 추출, role·benefit_type·rate·cap_krw·sunset 등을 열로 편 것).
+
+```sql
+select law_name, article_key, role, benefit_type, rate, cap_krw, sunset from extract_fact where role = 'benefit' order by sunset nulls last;
+```
 
 ### 추출 감사 (kloe-audit)
 

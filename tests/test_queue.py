@@ -56,8 +56,10 @@ def test_failed_lines_are_requeued_once(tmp_path):
     run_agent(tmp_path, "extract", rep.requeued.name, lambda rows: [])
     rep2 = qi.ingest_batch(tmp_path, "extract", rep.requeued.name)
     assert len(rep2.missing) == 3 and rep2.requeued is None
-    # 버린 job은 다음 export에서 빠진다 (매일 밤 다시 나가지 않게)
-    assert qx.in_flight_provision_ids(tmp_path, "extract") == {1, 2, 4}
+    # 버린 job은 이유와 함께 dropped.jsonl에 남는다 (DB로 옮겨 다음 export에서 뺀다)
+    dropped = qx.read_jsonl(qx.stage_dir(tmp_path, "failed", "extract") / qx.DROPPED)
+    assert sorted(j["provision_id"] for j in dropped) == [1, 2, 4] and all(j["drop_reasons"] for j in dropped)
+    assert qx.in_flight_provision_ids(tmp_path, "extract") == set()
 
 
 def test_requeue_stale(tmp_path):

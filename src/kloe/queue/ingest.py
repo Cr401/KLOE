@@ -126,9 +126,10 @@ def finish(work_dir: Path, stage: str, report: IngestReport, floor: int = 0) -> 
             [f["job_id"] for f in report.failed if f["job_id"] in jobs and f["job_id"] not in accepted] + report.missing
         ))
         retry = [{**jobs[j], "attempt": jobs[j].get("attempt", 0) + 1} for j in retry_ids]
-        dropped = [j for j in retry if j["attempt"] >= MAX_ATTEMPTS]
+        why = {f["job_id"]: f["reasons"] for f in report.failed}
+        dropped = [{**j, "drop_reasons": why.get(j["job_id"], ["결과 없음"])} for j in retry if j["attempt"] >= MAX_ATTEMPTS]
         retry = [j for j in retry if j["attempt"] < MAX_ATTEMPTS]
-        if dropped:  # 다음 export가 다시 내보내지 않게 남긴다 (in_flight_provision_ids가 읽음). 다시 돌리려면 이 파일을 지운다
+        if dropped:  # kloe ingest가 dropped_job 테이블로 옮기고 다음 export가 거기서 뺀다 (db.sync_dropped)
             with open(failed_dir / DROPPED, "a", encoding="utf-8") as f:
                 f.writelines(json.dumps(j, ensure_ascii=False) + "\n" for j in dropped)
         report.requeued = write_batch(work_dir, stage, retry, floor)

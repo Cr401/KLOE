@@ -13,6 +13,7 @@ from kloe.collect.law_api import LawApiClient, LawApiError
 from kloe.collect.programs import SOURCES as PROGRAM_SOURCES
 from kloe.collect.programs import ProgramApiClient, ProgramApiError
 from kloe.link.delegation import link
+from kloe.link.facts import base_law_name
 from kloe.models import Provision
 from kloe.normalize.parse import parse_law_xml
 from kloe.normalize.program import parse_rows
@@ -72,13 +73,6 @@ def load_files(conn, files: list[Path]) -> set[str]:
     return changed
 
 
-def _base_law_name(name: str) -> str:
-    for suffix in (" 시행령", " 시행규칙"):
-        if name.endswith(suffix):
-            return name.removesuffix(suffix)
-    return name
-
-
 def link_law(conn, law_name: str) -> int:
     def as_provisions(rows: dict[str, dict]) -> list[Provision]:
         return [Provision(article_key=k, heading=None, text=r["text"], effective_from=date.min) for k, r in rows.items()]
@@ -89,7 +83,7 @@ def link_law(conn, law_name: str) -> int:
     links = link(as_provisions(law), as_provisions(decree), as_provisions(rule))
     n = db.store_links(
         conn,
-        {k: r["id"] for k, r in law.items()},
+        {"law": {k: r["id"] for k, r in law.items()}, "decree": {k: r["id"] for k, r in decree.items()}},
         {"decree": {k: r["id"] for k, r in decree.items()}, "rule": {k: r["id"] for k, r in rule.items()}},
         links,
     )
@@ -117,10 +111,16 @@ def fetch_programs(conn, raw_dir: Path, sources: list[str], *, max_pages: int = 
     return total_p, total_v
 
 
+def _exclude(conn, work_dir: Path, stage: str) -> set[int]:
+    """다시 내보내지 않을 대상: 대기·처리 중인 배치에 든 것과 재시도까지 실패해 버린 것."""
+    db.sync_dropped(conn, work_dir, stage)
+    return qx.in_flight_provision_ids(work_dir, stage) | db.dropped_ids(conn, stage)
+
+
 def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int, recheck: str | None = None,
                  law_filter: str | None = None) -> list[Path]:
     if stage == "audit":
-        rows = db.export_audit_candidates(conn, limit, qx.in_flight_provision_ids(work_dir, stage), law_filter)
+        rows = db.export_audit_candidates(conn, limit, _exclude(conn, work_dir, stage), law_filter)
         return _write_batches(conn, work_dir, stage, [
             qx.make_audit_job(fact_id=r["fact_id"], text_hash=r["text_hash"], law_name=r["law_name"],
                               article_key=r["article_key"], text=r["text"],
@@ -128,7 +128,7 @@ def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int, 
             for r in rows
         ], batch_size)
     if stage == "program":
-        rows = db.export_program_candidates(conn, limit, qx.in_flight_provision_ids(work_dir, stage))
+        rows = db.export_program_candidates(conn, limit, _exclude(conn, work_dir, stage))
         return _write_batches(conn, work_dir, stage, [
             qx.make_program_job(version_id=r["version_id"], text_hash=r["text_hash"], source=r["source"],
                                 title=r["title"], apply_end=r["apply_end"].isoformat() if r["apply_end"] else None,
@@ -136,7 +136,7 @@ def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int, 
             for r in rows
         ], batch_size)
     db.carry_facts(conn)  # 개정판 뒤에 가져온 옛 조문 결과를 새 조문으로 (멱등)
-    rows = db.export_candidates(conn, stage, limit, qx.in_flight_provision_ids(work_dir, stage), recheck)
+    rows = db.export_candidates(conn, stage, limit, _exclude(conn, work_dir, stage), recheck)
     jobs = [
         qx.make_job(
             stage,
@@ -171,6 +171,7 @@ def ingest_stage(conn, work_dir: Path, stage: str) -> list[qi.IngestReport]:
             if rep.requeued:
                 db.record_batch(conn, stage, rep.requeued.name)
                 conn.commit()
+            db.sync_dropped(conn, work_dir, stage)
             print(f"ingested {stage}/{name}: {n} facts, {len(rep.failed)} failed, {len(rep.missing)} missing"
                   + (f", requeued -> {rep.requeued.name}" if rep.requeued else ""))
             reports.append(rep)
@@ -240,6 +241,21 @@ def cmd_requeue(args) -> int:
     return 0
 
 
+def cmd_undrop(args) -> int:
+    work_dir, _ = _paths(args)
+    with db.connect(args.db) as conn:
+        for stage in args.stage or STAGES:
+            db.sync_dropped(conn, work_dir, stage)
+            print(f"undropped {stage}: {db.undrop(conn, stage)} jobs (다음 export에 다시 나감)")
+    return 0
+
+
+def cmd_link_facts(args) -> int:
+    with db.connect(args.db) as conn:
+        print(f"linked facts: {db.link_facts(conn)} parent_ref links")
+    return 0
+
+
 def cmd_agent(args) -> int:
     work_dir, _ = _paths(args)
     try:
@@ -262,12 +278,12 @@ def status_line(conn, work_dir: Path) -> str:
         """select payload->>'stage' as stage, count(*) as n from fact where status = 'verified' group by 1""")}
     verified["program"] = conn.execute(
         "select count(*) as n from program_fact where status = 'verified'").fetchone()["n"]
+    dropped = {r["stage"]: r["n"] for r in conn.execute("select stage, count(*) as n from dropped_job group by 1")}
     parts = []
     for stage in STAGES:
         n = {state: len(list(qx.stage_dir(work_dir, state, stage).glob("batch-*.jsonl")))
              for state in ("queue", "claimed", "out")}
-        dropped = qx.stage_dir(work_dir, "failed", stage) / qx.DROPPED
-        nd = len(qx.read_jsonl(dropped)) if dropped.exists() else 0
+        nd = dropped.get(stage, 0)
         parts.append(f"{stage} queue={n['queue']} claimed={n['claimed']} out={n['out']} "
                      f"dropped={nd} verified={verified.get(stage, 0)}")
     return " | ".join(parts)
@@ -319,7 +335,7 @@ def cmd_nightly(args) -> int:
     files = cmd_fetch(args)
     with db.connect(args.db) as conn:
         changed = load_files(conn, files)
-        for name in sorted({_base_law_name(n) for n in changed}):
+        for name in sorted({base_law_name(n) for n in changed}):
             link_law(conn, name)
         for source in PROGRAM_SOURCES:  # 한 소스가 실패해도 다른 소스는 받는다
             try:
@@ -329,6 +345,7 @@ def cmd_nightly(args) -> int:
                 print(f"공고 수집 건너뜀 ({source}): {e}", file=sys.stderr)
         for stage in STAGES:
             ingest_stage(conn, work_dir, stage)
+        print(f"linked facts: {db.link_facts(conn)} parent_ref links")
         for stage in AUTO_EXPORT:
             export_stage(conn, work_dir, stage, args.limit, args.batch_size)
     return 0
@@ -377,6 +394,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ingest", help="결과 파일 가져오기 + 검증")
     p.add_argument("--stage", action="append", choices=STAGES)
     p.set_defaults(func=cmd_ingest)
+
+    p = sub.add_parser("undrop", help="재시도까지 실패해 버린 job을 다시 내보낼 수 있게 풀기")
+    p.add_argument("--stage", action="append", choices=STAGES)
+    p.set_defaults(func=cmd_undrop)
+
+    p = sub.add_parser("link-facts", help="추출 fact의 parent_ref를 현행 조문으로 잇기 (nightly도 함)")
+    p.set_defaults(func=cmd_link_facts)
 
     p = sub.add_parser("requeue", help="오래된 claimed 배치를 queue로 되돌리기")
     p.add_argument("--stale", default="6h")

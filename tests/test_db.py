@@ -130,6 +130,46 @@ def test_audit_samples_extract_facts_and_reports(conn, tmp_path):
     assert "| benefit_size | 1 | 0 | 0 |" in report and "공제한도는 3천만원" in report
 
 
+def test_fact_links_view_and_dropped_jobs(conn, tmp_path):
+    from kloe.queue import export as qx
+
+    work = tmp_path / "work"
+    cli.load_files(conn, [FIX / "law_v1.xml", FIX / "decree_v1.xml"])
+    cli.link_law(conn, "테스트특례법")
+    drain(conn, work, "classify")
+    drain(conn, work, "extract")
+    view = {r["article_key"]: (float(r["rate"]), r["cap_krw"]) for r in conn.execute("select * from extract_fact")}
+    assert view == {"16-1": (0.1, None), "17-1": (0.05, None)}
+
+    # parent_ref 풀기: 시행령 "법 제16조제1항" -> 법률 16-1, 같은 조 "제1항" -> 16-1
+    prov = {r["article_key"] + "@" + r["law_name"]: r["id"] for r in conn.execute(
+        "select p.id, p.article_key, d.law_name from provision p join source_document d on d.id = p.document_id")}
+    batch = conn.execute("select id from batch limit 1").fetchone()["id"]
+    for key, ref in (("10-1@테스트특례법 시행령", "법 제16조제1항"), ("16-2@테스트특례법", "제1항")):
+        conn.execute(
+            """insert into fact (provision_id, text_hash, batch_id, is_benefit, payload, status, extractor)
+               select id, text_hash, %s, true, %s, 'verified', 'cc:test:kloe-extract@0.0' from provision where id = %s""",
+            (batch, db.Jsonb({"stage": "extract", "is_benefit": True, "role": "condition", "parent_ref": ref}), prov[key]))
+    assert db.link_facts(conn) == 2 and db.link_facts(conn) == 0
+    targets = {r["ref"]: r["article_key"] for r in conn.execute(
+        "select l.ref, p.article_key from fact_link l join provision p on p.id = l.target_id")}
+    assert targets == {"법 제16조제1항": "16-1", "제1항": "16-1"}
+
+    # 버린 job은 DB에 남고 다음 export에서 빠진다. undrop하면 다시 나간다
+    fid = conn.execute("select id, text_hash from extract_fact where article_key = '16-1'").fetchone()
+    failed = qx.stage_dir(work, "failed", "audit")
+    (failed / qx.DROPPED).write_text(
+        '{"fact_id": %d, "text_hash": "%s", "drop_reasons": ["인용이 원문에 없음"]}\n' % (fid["id"], fid["text_hash"]),
+        encoding="utf-8")
+    jobs = [j for p in cli.export_stage(conn, work, "audit", 50, 20) for j in qx.read_jsonl(p)]
+    assert sorted(j["article_key"] for j in jobs) == ["10-1", "16-2", "17-1"]  # 16-1만 빠짐
+    assert not (failed / qx.DROPPED).exists() and (failed / qx.DROPPED_LOG).exists()
+    assert "audit queue=1 claimed=0 out=0 dropped=1" in cli.status_line(conn, work)
+    assert db.undrop(conn, "audit") == 1
+    jobs = [j for p in cli.export_stage(conn, work, "audit", 50, 20) for j in qx.read_jsonl(p)]
+    assert [j["article_key"] for j in jobs] == ["16-1"]
+
+
 def qx_first_job(work):
     from kloe.queue.export import read_jsonl, stage_dir
 

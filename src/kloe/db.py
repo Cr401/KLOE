@@ -122,37 +122,75 @@ def _close_previous_version(conn, law_id: str, new_doc_id: int, effective: date,
             conn.execute("update fact set status = 'stale' where provision_id = %s and status <> 'rejected'", (old_id,))
 
 
-def store_links(conn, source_ids: dict[str, int], target_ids: dict[str, dict[str, int]], links: list[DelegationLink]) -> int:
-    """target_ids: {'decree': {article_key: id}, 'rule': {...}}"""
-    n = 0
+def store_links(conn, source_ids: dict[str, dict[str, int]], target_ids: dict[str, dict[str, int]],
+                links: list[DelegationLink]) -> int:
+    """source_ids: {'law': {article_key: id}, 'decree': {...}}, target_ids: {'decree': {...}, 'rule': {...}}.
+    (원천, 문구)마다 대상 집합을 새로 맞춘다: 없어진 대상은 지우고 새 대상은 넣는다. 새로 넣은 행 수를 돌려준다."""
+    wanted: dict[tuple[int, str], set[int | None]] = {}
+    methods: dict[tuple[int, str], str] = {}
     for lk in links:
-        src = source_ids.get(lk.source_key)
+        src = source_ids.get(lk.source_level, {}).get(lk.source_key)
         if src is None:
             continue
         tgt = target_ids.get(lk.target_level, {}).get(lk.target_key) if lk.target_key else None
-        exists = conn.execute(
-            "select 1 from delegation where source_id = %s and phrase = %s", (src, lk.phrase)
-        ).fetchone()
-        if exists:
-            conn.execute("update delegation set target_id = %s where source_id = %s and phrase = %s", (tgt, src, lk.phrase))
-        else:
-            conn.execute(
-                "insert into delegation (source_id, target_id, phrase, method) values (%s, %s, %s, %s)",
-                (src, tgt, lk.phrase, lk.method),
-            )
+        wanted.setdefault((src, lk.phrase), set()).add(tgt)
+        methods[(src, lk.phrase)] = lk.method
+    n = 0
+    for (src, phrase), targets in wanted.items():
+        if len(targets) > 1:
+            targets.discard(None)
+        have = {r["target_id"] for r in conn.execute(
+            "select target_id from delegation where source_id = %s and phrase = %s", (src, phrase))}
+        for gone in have - targets:
+            conn.execute("delete from delegation where source_id = %s and phrase = %s and target_id is not distinct from %s",
+                         (src, phrase, gone))
+        for new in targets - have:
+            conn.execute("insert into delegation (source_id, target_id, phrase, method) values (%s, %s, %s, %s)",
+                         (src, new, phrase, methods[(src, phrase)]))
             n += 1
     return n
 
 
 def current_provisions(conn, law_name: str) -> dict[str, dict]:
-    """해당 법령의 가장 최근 판 조문."""
+    """해당 법령의 현행 조문. 내보내기와 같은 기준(effective_to is null)으로, 이름이 아니라 law_id로 묶는다
+    (법령명이 바뀐 판이 섞여 있어도 같은 법령)."""
     doc = conn.execute(
-        "select id from source_document where law_name = %s order by effective desc, id desc limit 1", (law_name,)
+        "select law_id from source_document where law_name = %s order by effective desc, id desc limit 1", (law_name,)
     ).fetchone()
     if not doc:
         return {}
     return {r["article_key"]: r for r in conn.execute(
-        "select id, article_key, text from provision where document_id = %s", (doc["id"],))}
+        """select p.id, p.article_key, p.text from provision p join source_document d on d.id = p.document_id
+           where d.law_id = %s and p.effective_to is null order by d.effective, d.id""", (doc["law_id"],))}
+
+
+def link_facts(conn) -> int:
+    """verified 추출 fact 중 parent_ref가 있고 아직 안 이은 것을 현행 조문으로 잇는다 (fact_link). 멱등."""
+    from kloe.link.facts import base_law_name, parse_ref, resolve
+
+    rows = conn.execute(
+        """select f.id, f.payload->>'parent_ref' as ref, p.id as pid, p.article_key, d.law_name
+           from fact f join provision p on p.id = f.provision_id join source_document d on d.id = p.document_id
+           where f.stage = 'extract' and f.status = 'verified' and p.effective_to is null
+             and coalesce(f.payload->>'parent_ref', '') <> ''
+             and not exists (select 1 from fact_link l where l.fact_id = f.id)""").fetchall()
+    cache: dict[str, dict[str, dict]] = {}
+    n = 0
+    for r in rows:
+        base = base_law_name(r["law_name"])
+        for ref in parse_ref(r["ref"]):
+            name = {"law": base, "decree": f"{base} 시행령"}.get(ref.level, r["law_name"])
+            if name not in cache:
+                cache[name] = current_provisions(conn, name)
+            provs = cache[name]
+            for key in resolve(ref, r["article_key"], set(provs)):
+                if provs[key]["id"] == r["pid"]:
+                    continue
+                n += conn.execute(
+                    "insert into fact_link (fact_id, target_id, ref) values (%s, %s, %s) on conflict do nothing",
+                    (r["id"], provs[key]["id"], r["ref"])).rowcount
+    conn.commit()
+    return n
 
 
 def provisions_as_of(conn, law_id: str, as_of: date) -> list[dict]:
@@ -337,6 +375,39 @@ def export_candidates(conn, stage: str, limit: int, exclude: set[int], recheck: 
     for r in rows:
         r["delegations"] = by_source[r["id"]]
     return rows
+
+
+def sync_dropped(conn, work_dir: Path, stage: str) -> int:
+    """failed/<stage>/dropped.jsonl을 dropped_job으로 옮기고 파일은 dropped-log.jsonl 뒤에 붙인다 (멱등)."""
+    from kloe.queue import export as qx
+
+    path = qx.stage_dir(work_dir, "failed", stage) / qx.DROPPED
+    if not path.exists():
+        return 0
+    key = qx.TARGET_KEY.get(stage, "provision_id")
+    rows = qx.read_jsonl(path)
+    n = 0
+    for j in rows:
+        n += conn.execute(
+            """insert into dropped_job (stage, target_id, text_hash, reasons) values (%s, %s, %s, %s)
+               on conflict do nothing""",
+            (stage, int(j[key]), j.get("text_hash", ""), Jsonb(j.get("drop_reasons", []))),
+        ).rowcount
+    conn.commit()
+    with open(path.with_name(qx.DROPPED_LOG), "a", encoding="utf-8") as f:
+        f.write(path.read_text(encoding="utf-8"))
+    path.unlink()
+    return n
+
+
+def dropped_ids(conn, stage: str) -> set[int]:
+    return {r["target_id"] for r in conn.execute("select target_id from dropped_job where stage = %s", (stage,))}
+
+
+def undrop(conn, stage: str) -> int:
+    n = conn.execute("delete from dropped_job where stage = %s", (stage,)).rowcount
+    conn.commit()
+    return n
 
 
 def max_batch_number(conn, stage: str) -> int:
