@@ -364,7 +364,7 @@ def export_candidates(conn, stage: str, limit: int, exclude: set[int], recheck: 
     elif stage == "classify":
         base += f"""
         and exists (select 1 from fact f where {cls} and not f.is_benefit
-                    and (p.text ~ '(대통령령|재정경제부령)으로 정한다' or f.payload->>'reason' ~ '위임'))
+                    and (p.text ~ '(대통령령|총리령|[가-힣]+부령)으로 정한다' or f.payload->>'reason' ~ '위임'))
         and not exists (select 1 from fact f where {cls} and f.is_benefit)
         and not exists (select 1 from fact f where {cls} and f.extractor like %(ver)s)
         and exists (select 1 from provision s join fact f on f.provision_id = s.id and f.text_hash = s.text_hash

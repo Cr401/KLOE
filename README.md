@@ -26,6 +26,7 @@ kloe nightly
 pytest                                   # DB 없이 도는 테스트
 KLOE_TEST_DATABASE_URL=postgresql://kloe:kloe@localhost:5432/kloe_test pytest   # Postgres 통합 테스트 포함 (public 스키마를 지운다)
 ```
+- GitHub Actions(`.github/workflows/test.yml`)가 push·PR마다 Postgres 16 컨테이너를 띄워 통합 테스트까지 돌린다.
 
 ## 배치 규칙 (L1 에이전트용)
 
