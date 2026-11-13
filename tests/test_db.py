@@ -1,6 +1,7 @@
 """Postgres 통합 테스트. KLOE_TEST_DATABASE_URL이 없으면 건너뛴다 (테스트가 public 스키마를 지운다)."""
 
 import os
+import re
 from datetime import date
 from pathlib import Path
 
@@ -84,9 +85,151 @@ def test_pipeline_end_to_end(conn, tmp_path):
     assert "5천만원" in next(r["text"] for r in v2 if r["article_key"] == "16-1")
     assert db.provisions_as_of(conn, "999001", date(2025, 6, 1)) == []
 
-    # 새 판의 조문만 다시 분류 대상이 된다 (현행 3개)
+    # 안 바뀐 조문(16-2 등)은 결과를 이어받고, 본문이 바뀐 16-1만 다시 분류 대상이 된다
+    carried = {r["article_key"] for r in conn.execute(
+        """select p.article_key from fact f join provision p on p.id = f.provision_id
+           where f.carried_from is not null and f.payload->>'stage' = 'classify'""")}
+    assert "16-1" not in carried and "16-2" in carried
     paths = cli.export_stage(conn, work, "classify", 100, 10)
-    assert sum(len(qi.read_jsonl(p)) for p in paths) == 3
+    assert [j["article_key"] for p in paths for j in qi.read_jsonl(p)] == ["16-1"]
+    assert db.carry_facts(conn) == 0  # 멱등
+    line = cli.status_line(conn, work)
+    assert "classify queue=" in line and "program queue=0" in line
+
+
+def test_carry_facts_for_results_ingested_after_new_version(conn, tmp_path):
+    """옛 판 조문으로 나간 배치가 개정판 적재 뒤에 들어와도, 다음 내보내기에서 다시 나가지 않는다."""
+    work = tmp_path / "work"
+    cli.load_files(conn, [FIX / "law_v1.xml"])
+    paths = cli.export_stage(conn, work, "classify", limit=100, batch_size=10)
+    qi.claim(work, "classify", paths[0].name)
+    run_agent(work, "classify", paths[0].name)
+    cli.load_files(conn, [FIX / "law_v2.xml"])  # 결과를 가져오기 전에 개정판이 들어옴
+    cli.ingest_stage(conn, work, "classify")
+    again = cli.export_stage(conn, work, "classify", 100, 10)
+    assert [j["article_key"] for p in again for j in qi.read_jsonl(p)] == ["16-1"]
+
+
+def test_audit_samples_extract_facts_and_reports(conn, tmp_path):
+    work = tmp_path / "work"
+    cli.load_files(conn, [FIX / "law_v1.xml", FIX / "decree_v1.xml"])
+    cli.link_law(conn, "테스트특례법")
+    drain(conn, work, "classify")
+    drain(conn, work, "extract")
+    paths = cli.export_stage(conn, work, "audit", limit=50, batch_size=20)
+    jobs = [j for p in paths for j in qi.read_jsonl(p)]
+    assert {j["article_key"] for j in jobs} == {"16-1", "17-1"} and all("fact" in j for j in jobs)
+    assert cli.export_stage(conn, work, "audit", 50, 20) == []  # 대기 중인 것은 다시 안 나감
+    for p in paths:
+        qi.claim(work, "audit", p.name)
+        run_agent(work, "audit", p.name)
+    [rep] = cli.ingest_stage(conn, work, "audit")
+    assert rep.ok
+    assert cli.export_stage(conn, work, "audit", 50, 20) == []  # 이미 감사함
+    report = cli.write_audit_report(conn, tmp_path / "reports").read_text(encoding="utf-8")
+    assert "감사한 fact 2건, 문제 없음 1건" in report
+    assert "| benefit_size | 1 | 0 | 0 |" in report and "공제한도는 3천만원" in report
+
+
+def test_fact_links_view_and_dropped_jobs(conn, tmp_path):
+    from kloe.queue import export as qx
+
+    work = tmp_path / "work"
+    cli.load_files(conn, [FIX / "law_v1.xml", FIX / "decree_v1.xml"])
+    cli.link_law(conn, "테스트특례법")
+    drain(conn, work, "classify")
+    drain(conn, work, "extract")
+    view = {r["article_key"]: (float(r["rate"]), r["cap_krw"]) for r in conn.execute("select * from extract_fact")}
+    assert view == {"16-1": (0.1, None), "17-1": (0.05, None)}
+
+    # parent_ref 풀기: 시행령 "법 제16조제1항" -> 법률 16-1, 같은 조 "제1항" -> 16-1
+    prov = {r["article_key"] + "@" + r["law_name"]: r["id"] for r in conn.execute(
+        "select p.id, p.article_key, d.law_name from provision p join source_document d on d.id = p.document_id")}
+    batch = conn.execute("select id from batch limit 1").fetchone()["id"]
+    for key, ref in (("10-1@테스트특례법 시행령", "법 제16조제1항"), ("16-2@테스트특례법", "제1항")):
+        conn.execute(
+            """insert into fact (provision_id, text_hash, batch_id, is_benefit, payload, status, extractor)
+               select id, text_hash, %s, true, %s, 'verified', 'cc:test:kloe-extract@0.0' from provision where id = %s""",
+            (batch, db.Jsonb({"stage": "extract", "is_benefit": True, "role": "condition", "parent_ref": ref}), prov[key]))
+    assert db.link_facts(conn) == 2 and db.link_facts(conn) == 0
+    targets = {r["ref"]: r["article_key"] for r in conn.execute(
+        "select l.ref, p.article_key from fact_link l join provision p on p.id = l.target_id")}
+    assert targets == {"법 제16조제1항": "16-1", "제1항": "16-1"}
+
+    # 버린 job은 DB에 남고 다음 export에서 빠진다. undrop하면 다시 나간다
+    fid = conn.execute("select id, text_hash from extract_fact where article_key = '16-1'").fetchone()
+    failed = qx.stage_dir(work, "failed", "audit")
+    (failed / qx.DROPPED).write_text(
+        '{"fact_id": %d, "text_hash": "%s", "drop_reasons": ["인용이 원문에 없음"]}\n' % (fid["id"], fid["text_hash"]),
+        encoding="utf-8")
+    jobs = [j for p in cli.export_stage(conn, work, "audit", 50, 20) for j in qx.read_jsonl(p)]
+    assert sorted(j["article_key"] for j in jobs) == ["10-1", "16-2", "17-1"]  # 16-1만 빠짐
+    assert not (failed / qx.DROPPED).exists() and (failed / qx.DROPPED_LOG).exists()
+    assert "audit queue=1 claimed=0 out=0 dropped=1" in cli.status_line(conn, work)
+    assert db.undrop(conn, "audit") == 1
+    jobs = [j for p in cli.export_stage(conn, work, "audit", 50, 20) for j in qx.read_jsonl(p)]
+    assert [j["article_key"] for j in jobs] == ["16-1"]
+
+
+def test_ideate_review_and_metrics(conn, tmp_path):
+    from kloe import ideas
+
+    work, reports = tmp_path / "work", tmp_path / "reports"
+    cli.load_files(conn, [FIX / "law_v1.xml", FIX / "decree_v1.xml"])
+    cli.link_law(conn, "테스트특례법")
+    drain(conn, work, "classify")
+    drain(conn, work, "extract")
+    cs = ideas.clusters(conn)
+    assert [c.key for c in cs] == ["테스트특례법 제16조", "테스트특례법 제17조"]
+    card = ideas.render_card(1, cs[0])
+    assert card.startswith("### C1 테스트특례법 제16조 [deduction] 율 10%") and "- fact:" in card
+
+    paths = cli.export_stage(conn, work, "ideate", 0, 1)
+    assert len(paths) == 4  # 렌즈마다 배치 하나
+    assert cli.export_stage(conn, work, "ideate", 0, 1) == []  # 대기 중인 렌즈는 다시 안 나감
+    job = qi.read_jsonl(paths[0])[0]
+    catalog = Path(job["catalog"]).read_text(encoding="utf-8")
+    assert "## 1. 전체 카드 (2장)" in catalog and "\"quotes\"" in catalog
+    for p in paths:
+        qi.claim(work, "ideate", p.name)
+        run_agent(work, "ideate", p.name)
+    reps = cli.ingest_stage(conn, work, "ideate")
+    assert all(r.ok for r in reps)
+    rows = {r["lens"]: r for r in conn.execute("select * from idea")}
+    assert set(rows) == {"combo", "gap", "business"}  # time은 일몰 근거가 없어 0건
+    assert len({e["id"] for e in rows["combo"]["evidence"]}) == 2
+
+    # 같은 근거로 다시 내면 중복으로 막힌다
+    conn.execute("delete from idea where lens = 'business'")
+    conn.execute("insert into idea (week, title, body, lens, evidence, evidence_hash, status) values ('x', 't', 'b', 'business', '[]', %s, 'proposed')",
+                 (rows["business"]["evidence_hash"],))
+    conn.commit()
+    [p] = cli.export_stage(conn, work, "ideate", 0, 1, lenses=("business",))  # 이번 주 business가 비어 다시 나감
+    qi.claim(work, "ideate", p.name)
+    run_agent(work, "ideate", p.name)
+    [rep] = cli.ingest_stage(conn, work, "ideate")
+    assert rep.ok and conn.execute("select count(*) as n from idea_duplicate").fetchone()["n"] == 1
+    conn.execute("delete from idea where week = 'x'")
+
+    path, n = ideas.write_review_file(conn, reports)
+    assert n == 2 and path.name.endswith(".review.md")
+    text = path.read_text(encoding="utf-8")
+    first, second = [int(x) for x in re.findall(r"^## idea:(\d+)", text, flags=re.M)]
+    text = text.replace("- [ ] keep", "- [x] keep", 1)
+    marks, broken = ideas.parse_review_file(text)
+    assert [m.idea_id for m in marks] == [first] and broken == []
+    # drop + wrong_fact 표시
+    text2 = text.split(f"## idea:{second}")[1].replace("- [ ] drop  사유:", "- [x] drop  사유: wrong_fact")
+    marks2, _ = ideas.parse_review_file(f"## idea:{second}" + text2)
+    assert db.store_review_marks(conn, marks + marks2) == (2, 0)
+    assert db.store_review_marks(conn, marks) == (0, 1)  # 이미 점검함
+    m = db.idea_metrics(conn)
+    assert m["status"] == {"approved": 1, "rejected": 1} and m["drop_tags"] == {"wrong_fact": 1}
+    assert m["wrong_fact_ids"] and m["batches"] == 5 and m["duplicates_blocked"] == 1
+
+    # 근거 fact가 stale이 되면 needs_recheck
+    conn.execute("update fact set status = 'stale' where stage = 'extract'")
+    assert db.recheck_ideas(conn) == 1  # approved 1건 (rejected는 그대로)
 
 
 def qx_first_job(work):
@@ -128,7 +271,9 @@ def test_programs_end_to_end(conn, tmp_path, monkeypatch):
     # 마감 지난 공고(2025년)는 내보내지 않는다
     paths = cli.export_stage(conn, work, "program", limit=100, batch_size=10)
     jobs = qi.read_jsonl(paths[0])
-    assert sorted(j["title"] for j in jobs) == ["2027년 테스트 예비창업패키지 모집", "테스트 대학생 장학금", "테스트 청년 월세 지원"]
+    # 순서: K-Startup → 마감일 있는 것 → 나머지
+    assert [j["title"] for j in jobs] == ["2027년 테스트 예비창업패키지 모집", "테스트 청년 월세 지원", "테스트 대학생 장학금"]
+    assert not any("문의처" in j["text"] or "구비서류" in j["text"] for j in jobs)
     assert cli.export_stage(conn, work, "program", 100, 10) == []  # 이미 나간 것은 다시 안 나감
 
     qi.claim(work, "program", paths[0].name)
@@ -138,6 +283,10 @@ def test_programs_end_to_end(conn, tmp_path, monkeypatch):
     assert conn.execute("select count(*) as n from program_fact where status = 'verified'").fetchone()["n"] == 3
     assert cli.export_stage(conn, work, "program", 100, 10) == []
     assert len(db.open_programs(conn)) == 3
+    # 같은 소스의 최근 수집보다 3일 넘게 안 보인 공고는 퇴출 (목록에서 사라짐)
+    conn.execute("update program set last_seen = last_seen - interval '4 days' where title = '테스트 대학생 장학금'")
+    assert len(db.open_programs(conn)) == 2
+    conn.execute("update program set last_seen = last_seen + interval '4 days' where title = '테스트 대학생 장학금'")
 
     basis = list(conn.execute("select basis, law_id from program_law_basis"))
     assert sorted((b["basis"], b["law_id"]) for b in basis) == [

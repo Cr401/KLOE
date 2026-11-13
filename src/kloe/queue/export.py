@@ -17,11 +17,12 @@ from contextlib import contextmanager
 from collections.abc import Iterable
 from pathlib import Path
 
-STAGES = ("classify", "extract", "program", "synthesize", "report")
+STAGES = ("classify", "extract", "program", "audit", "ideate", "synthesize", "report")
 # 단계마다 job이 가리키는 대상의 키. program 단계는 조문이 아니라 공고 판(program_version)을 다룬다.
-TARGET_KEY = {"program": "version_id"}
+TARGET_KEY = {"program": "version_id", "audit": "fact_id", "ideate": "slot"}  # ideate slot = 연도·주·렌즈 번호
 STATES = ("queue", "claimed", "out", "done", "failed")
-DROPPED = "dropped.jsonl"  # 재시도까지 실패한 job
+DROPPED = "dropped.jsonl"  # 재시도까지 실패한 job. 다음 ingest/export가 DB(dropped_job)로 옮기고 DROPPED_LOG에 붙인다
+DROPPED_LOG = "dropped-log.jsonl"
 _BATCH_RE = re.compile(r"^batch-(\d{6})\.jsonl$")
 
 
@@ -80,6 +81,20 @@ def make_program_job(*, version_id: int, text_hash: str, source: str, title: str
     }
 
 
+def make_audit_job(*, fact_id: int, text_hash: str, law_name: str, article_key: str, text: str,
+                   fact: dict, attempt: int = 0) -> dict:
+    return {
+        "job_id": job_id("audit", fact_id, text_hash),
+        "fact_id": fact_id,
+        "text_hash": text_hash,
+        "law_name": law_name,
+        "article_key": article_key,
+        "text": text,
+        "fact": fact,
+        "attempt": attempt,
+    }
+
+
 def read_jsonl(path: Path) -> list[dict]:
     rows = []
     with open(path, encoding="utf-8") as f:
@@ -118,16 +133,13 @@ def write_batch(work_dir: Path, stage: str, jobs: list[dict], floor: int = 0) ->
 
 
 def in_flight_provision_ids(work_dir: Path, stage: str) -> set[int]:
-    """아직 가져오지 않은 배치(queue, claimed)에 들어 있는 조문(program 단계는 공고 판)과,
-    재시도까지 실패해서 버린 조문(failed/<stage>/dropped.jsonl). 둘 다 다시 내보내지 않는다."""
+    """아직 가져오지 않은 배치(queue, claimed)에 들어 있는 조문(program 단계는 공고 판, audit은 fact).
+    다시 내보내지 않는다. 재시도까지 실패해 버린 job은 DB의 dropped_job이 막는다."""
     key = TARGET_KEY.get(stage, "provision_id")
     ids: set[int] = set()
     for state in ("queue", "claimed"):
         for p in stage_dir(work_dir, state, stage).glob("batch-*.jsonl"):
             ids.update(int(j[key]) for j in read_jsonl(p))
-    dropped = stage_dir(work_dir, "failed", stage) / DROPPED
-    if dropped.exists():
-        ids.update(int(j[key]) for j in read_jsonl(dropped))
     return ids
 
 

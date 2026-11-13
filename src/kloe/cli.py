@@ -13,6 +13,7 @@ from kloe.collect.law_api import LawApiClient, LawApiError
 from kloe.collect.programs import SOURCES as PROGRAM_SOURCES
 from kloe.collect.programs import ProgramApiClient, ProgramApiError
 from kloe.link.delegation import link
+from kloe.link.facts import base_law_name
 from kloe.models import Provision
 from kloe.normalize.parse import parse_law_xml
 from kloe.normalize.program import parse_rows
@@ -72,13 +73,6 @@ def load_files(conn, files: list[Path]) -> set[str]:
     return changed
 
 
-def _base_law_name(name: str) -> str:
-    for suffix in (" 시행령", " 시행규칙"):
-        if name.endswith(suffix):
-            return name.removesuffix(suffix)
-    return name
-
-
 def link_law(conn, law_name: str) -> int:
     def as_provisions(rows: dict[str, dict]) -> list[Provision]:
         return [Provision(article_key=k, heading=None, text=r["text"], effective_from=date.min) for k, r in rows.items()]
@@ -89,7 +83,7 @@ def link_law(conn, law_name: str) -> int:
     links = link(as_provisions(law), as_provisions(decree), as_provisions(rule))
     n = db.store_links(
         conn,
-        {k: r["id"] for k, r in law.items()},
+        {"law": {k: r["id"] for k, r in law.items()}, "decree": {k: r["id"] for k, r in decree.items()}},
         {"decree": {k: r["id"] for k, r in decree.items()}, "rule": {k: r["id"] for k, r in rule.items()}},
         links,
     )
@@ -117,16 +111,43 @@ def fetch_programs(conn, raw_dir: Path, sources: list[str], *, max_pages: int = 
     return total_p, total_v
 
 
-def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int, recheck: str | None = None) -> list[Path]:
+def _exclude(conn, work_dir: Path, stage: str) -> set[int]:
+    """다시 내보내지 않을 대상: 대기·처리 중인 배치에 든 것과 재시도까지 실패해 버린 것."""
+    db.sync_dropped(conn, work_dir, stage)
+    return qx.in_flight_provision_ids(work_dir, stage) | db.dropped_ids(conn, stage)
+
+
+def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int, recheck: str | None = None,
+                 law_filter: str | None = None, lenses: tuple[str, ...] | None = None) -> list[Path]:
+    if stage == "ideate":  # 렌즈마다 배치 하나. 이번 주 그 렌즈가 대기 중이거나 이미 아이디어를 냈으면 건너뛴다
+        from kloe import ideas
+
+        exclude = _exclude(conn, work_dir, stage)
+        week = ideas.week_of(date.today())
+        done = {r["lens"] for r in conn.execute("select distinct lens from idea where week = %s", (week,))}
+        todo = tuple(lz for lz in (lenses or ideas.LENSES) if lz not in done and ideas.slot(week, lz) not in exclude)
+        jobs = ideas.build_ideate(conn, work_dir, lenses=todo) if todo else []
+        for j in jobs:
+            print(f"ideate {j['lens']}: 카드 {j['n_cards']}장, 상세 {len(j['detail'])}개, 카탈로그 {j['catalog_chars']:,}자")
+        return _write_batches(conn, work_dir, stage, jobs, 1)
+    if stage == "audit":
+        rows = db.export_audit_candidates(conn, limit, _exclude(conn, work_dir, stage), law_filter)
+        return _write_batches(conn, work_dir, stage, [
+            qx.make_audit_job(fact_id=r["fact_id"], text_hash=r["text_hash"], law_name=r["law_name"],
+                              article_key=r["article_key"], text=r["text"],
+                              fact={k: v for k, v in r["payload"].items() if k != "stage"})
+            for r in rows
+        ], batch_size)
     if stage == "program":
-        rows = db.export_program_candidates(conn, limit, qx.in_flight_provision_ids(work_dir, stage))
+        rows = db.export_program_candidates(conn, limit, _exclude(conn, work_dir, stage))
         return _write_batches(conn, work_dir, stage, [
             qx.make_program_job(version_id=r["version_id"], text_hash=r["text_hash"], source=r["source"],
                                 title=r["title"], apply_end=r["apply_end"].isoformat() if r["apply_end"] else None,
                                 text=r["text"])
             for r in rows
         ], batch_size)
-    rows = db.export_candidates(conn, stage, limit, qx.in_flight_provision_ids(work_dir, stage), recheck)
+    db.carry_facts(conn)  # 개정판 뒤에 가져온 옛 조문 결과를 새 조문으로 (멱등)
+    rows = db.export_candidates(conn, stage, limit, _exclude(conn, work_dir, stage), recheck)
     jobs = [
         qx.make_job(
             stage,
@@ -161,6 +182,7 @@ def ingest_stage(conn, work_dir: Path, stage: str) -> list[qi.IngestReport]:
             if rep.requeued:
                 db.record_batch(conn, stage, rep.requeued.name)
                 conn.commit()
+            db.sync_dropped(conn, work_dir, stage)
             print(f"ingested {stage}/{name}: {n} facts, {len(rep.failed)} failed, {len(rep.missing)} missing"
                   + (f", requeued -> {rep.requeued.name}" if rep.requeued else ""))
             reports.append(rep)
@@ -183,11 +205,14 @@ def cmd_export(args) -> int:
     work_dir, _ = _paths(args)
     with db.connect(args.db) as conn:
         recheck = qr.SKILL_VERSION["classify"] if args.recheck else None
-        export_stage(conn, work_dir, args.stage, args.limit, args.batch_size, recheck)
+        limit = args.limit if args.limit is not None else (50 if args.stage == "audit" else 5000)
+        export_stage(conn, work_dir, args.stage, limit, args.batch_size, recheck, args.law_filter,
+                     tuple(args.lens) if args.lens else None)
     return 0
 
 
-STAGES = ("classify", "extract", "program")
+STAGES = ("classify", "extract", "program", "audit", "ideate")  # 가져오기·되돌리기·상태 보기 대상
+AUTO_EXPORT = ("classify", "extract", "program")  # nightly가 자동으로 내보내는 단계. 감사·아이디어는 손으로만
 
 
 def cmd_fetch_programs(args) -> int:
@@ -228,6 +253,21 @@ def cmd_requeue(args) -> int:
     return 0
 
 
+def cmd_undrop(args) -> int:
+    work_dir, _ = _paths(args)
+    with db.connect(args.db) as conn:
+        for stage in args.stage or STAGES:
+            db.sync_dropped(conn, work_dir, stage)
+            print(f"undropped {stage}: {db.undrop(conn, stage)} jobs (다음 export에 다시 나감)")
+    return 0
+
+
+def cmd_link_facts(args) -> int:
+    with db.connect(args.db) as conn:
+        print(f"linked facts: {db.link_facts(conn)} parent_ref links")
+    return 0
+
+
 def cmd_agent(args) -> int:
     work_dir, _ = _paths(args)
     try:
@@ -244,6 +284,87 @@ def cmd_agent(args) -> int:
     return 0 if ok == len(results) else 1
 
 
+def status_line(conn, work_dir: Path) -> str:
+    """nightly 끝에 찍는 한 줄 요약: 단계별 대기·처리 중·결과 도착 배치 수, 버린 job 수, verified 수."""
+    verified = {r["stage"]: r["n"] for r in conn.execute(
+        """select payload->>'stage' as stage, count(*) as n from fact where status = 'verified' group by 1""")}
+    verified["program"] = conn.execute(
+        "select count(*) as n from program_fact where status = 'verified'").fetchone()["n"]
+    verified["audit"] = conn.execute("select count(*) as n from audit").fetchone()["n"]
+    verified["ideate"] = conn.execute("select count(*) as n from idea where evidence_hash is not null").fetchone()["n"]
+    dropped = {r["stage"]: r["n"] for r in conn.execute("select stage, count(*) as n from dropped_job group by 1")}
+    parts = []
+    for stage in STAGES:
+        n = {state: len(list(qx.stage_dir(work_dir, state, stage).glob("batch-*.jsonl")))
+             for state in ("queue", "claimed", "out")}
+        nd = dropped.get(stage, 0)
+        parts.append(f"{stage} queue={n['queue']} claimed={n['claimed']} out={n['out']} "
+                     f"dropped={nd} verified={verified.get(stage, 0)}")
+    return " | ".join(parts)
+
+
+def cmd_status(args) -> int:
+    work_dir, _ = _paths(args)
+    with db.connect(args.db) as conn:
+        print(status_line(conn, work_dir))
+    return 0
+
+
+def write_audit_report(conn, reports_dir: Path) -> Path:
+    s = db.audit_summary(conn)
+    lines = [f"# 추출 감사 {date.today().isoformat()}", "",
+             f"감사한 fact {s['total']}건, 문제 없음 {s['ok']}건. 감사 모델: {', '.join(s['extractors']) or '없음'}.",
+             "fact는 고치지 않았다. 계통 오류(같은 필드·방향이 반복)가 보이면 kloe-extract skill을 고친다.", "",
+             "## 필드별 지적", "", "| 필드 | lost (놓침) | wrong (틀림) | extra (지어냄) |", "| --- | --- | --- | --- |"]
+    for field in sorted({f for f, _ in s["by_field"]}):
+        c = [s["by_field"].get((field, d), 0) for d in ("lost", "wrong", "extra")]
+        lines.append(f"| {field} | {c[0]} | {c[1]} | {c[2]} |")
+    lines += ["", "## 놓친 것 (lost)", ""]
+    for i in s["lost"] or []:
+        lines.append(f"- {i['law_name']} {i['article_key']} (role={i['role']}) `{i['field']}`: {i['problem']}"
+                     f" — 원문: \"{i['quote']}\"")
+    if not s["lost"]:
+        lines.append("없음.")
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    path = reports_dir / f"audit-{date.today().isoformat()}.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def cmd_review_file(args) -> int:
+    from kloe import ideas
+
+    with db.connect(args.db) as conn:
+        n = db.recheck_ideas(conn)
+        path, blocks = ideas.write_review_file(conn, Path(args.reports_dir))
+        print(f"{path} ({blocks}건, 근거가 바뀐 아이디어 {n}건 표시)")
+    return 0
+
+
+def cmd_review_ingest(args) -> int:
+    from kloe import ideas
+
+    marks, broken = ideas.parse_review_file(Path(args.file).read_text(encoding="utf-8"))
+    with db.connect(args.db) as conn:
+        done, skipped = db.store_review_marks(conn, marks)
+    print(f"review: {done}건 기록, {skipped}건 건너뜀(이미 점검함), 깨진 블록 {len(broken)}건")
+    for b in broken:
+        print(f"  {b}", file=sys.stderr)
+    return 0
+
+
+def cmd_metrics(args) -> int:
+    with db.connect(args.db) as conn:
+        print(json.dumps(db.idea_metrics(conn), ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def cmd_audit_report(args) -> int:
+    with db.connect(args.db) as conn:
+        print(write_audit_report(conn, Path(args.reports_dir)))
+    return 0
+
+
 def cmd_show(args) -> int:
     with db.connect(args.db) as conn:
         for r in db.provisions_as_of(conn, args.law_id, date.fromisoformat(args.as_of)):
@@ -256,7 +377,7 @@ def cmd_nightly(args) -> int:
     files = cmd_fetch(args)
     with db.connect(args.db) as conn:
         changed = load_files(conn, files)
-        for name in sorted({_base_law_name(n) for n in changed}):
+        for name in sorted({base_law_name(n) for n in changed}):
             link_law(conn, name)
         for source in PROGRAM_SOURCES:  # 한 소스가 실패해도 다른 소스는 받는다
             try:
@@ -266,7 +387,9 @@ def cmd_nightly(args) -> int:
                 print(f"공고 수집 건너뜀 ({source}): {e}", file=sys.stderr)
         for stage in STAGES:
             ingest_stage(conn, work_dir, stage)
-        for stage in STAGES:
+        print(f"linked facts: {db.link_facts(conn)} parent_ref links")
+        print(f"ideas needing recheck: {db.recheck_ideas(conn)}")
+        for stage in AUTO_EXPORT:
             export_stage(conn, work_dir, stage, args.limit, args.batch_size)
     return 0
 
@@ -304,7 +427,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("export", help="배치 파일 내보내기")
     p.add_argument("--stage", choices=STAGES, required=True)
-    p.add_argument("--limit", type=int, default=5000)
+    p.add_argument("--limit", type=int, default=None, help="최대 job 수 (기본 5000, audit는 표본 50)")
+    p.add_argument("--law-filter", default=None, help="audit만: 법령명에 이 글자가 든 조문만 (예: 시행)")
+    p.add_argument("--lens", action="append", choices=("combo", "time", "gap", "business"),
+                   help="ideate만: 이 렌즈만 (여러 번 줄 수 있음. 기본 4개 전부)")
     p.add_argument("--batch-size", type=int, default=20)
     p.add_argument("--recheck", action="store_true",
                    help="classify만: false로 분류된 위임 항 중 같은 조에 true가 있는 것을 현재 skill 버전으로 다시 분류")
@@ -313,6 +439,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ingest", help="결과 파일 가져오기 + 검증")
     p.add_argument("--stage", action="append", choices=STAGES)
     p.set_defaults(func=cmd_ingest)
+
+    p = sub.add_parser("undrop", help="재시도까지 실패해 버린 job을 다시 내보낼 수 있게 풀기")
+    p.add_argument("--stage", action="append", choices=STAGES)
+    p.set_defaults(func=cmd_undrop)
+
+    p = sub.add_parser("link-facts", help="추출 fact의 parent_ref를 현행 조문으로 잇기 (nightly도 함)")
+    p.set_defaults(func=cmd_link_facts)
 
     p = sub.add_parser("requeue", help="오래된 claimed 배치를 queue로 되돌리기")
     p.add_argument("--stale", default="6h")
@@ -327,6 +460,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=int, default=900, help="배치 하나당 초")
     p.add_argument("--ingest", action="store_true", help="끝나고 바로 kloe ingest")
     p.set_defaults(func=cmd_agent)
+
+    sub.add_parser("status", help="단계별 대기 배치 수와 verified 수 한 줄").set_defaults(func=cmd_status)
+
+    p = sub.add_parser("review-file", help="점검 안 한 아이디어를 reports/YYYY-Www.review.md 로")
+    p.add_argument("--reports-dir", default=str(ROOT / "reports"))
+    p.set_defaults(func=cmd_review_file)
+
+    p = sub.add_parser("review-ingest", help="점검 파일의 keep/drop 표시를 기록")
+    p.add_argument("file")
+    p.set_defaults(func=cmd_review_ingest)
+
+    p = sub.add_parser("metrics", help="아이디어 지표 (검증 실패, 처리량, 중복 차단, 근거 다양성, drop 사유)")
+    p.set_defaults(func=cmd_metrics)
+
+    p = sub.add_parser("audit-report", help="추출 감사 결과를 reports/audit-<날짜>.md 로")
+    p.add_argument("--reports-dir", default=str(ROOT / "reports"))
+    p.set_defaults(func=cmd_audit_report)
 
     p = sub.add_parser("show", help="기준일 조문 재현")
     p.add_argument("--law-id", required=True)

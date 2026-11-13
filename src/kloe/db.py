@@ -62,7 +62,30 @@ def store_parsed(conn: psycopg.Connection, parsed: ParsedLaw) -> tuple[int, dict
             (doc_id, p.article_key, p.heading, p.text, p.text_hash, p.effective_from, p.effective_to),
         ).fetchone()["id"]
     _close_previous_version(conn, d.law_id, doc_id, d.effective, ids)
+    carry_facts(conn)
     return doc_id, ids, True
+
+
+def carry_facts(conn) -> int:
+    """같은 법령·조문 키·본문 해시를 가진 현행 조문으로 verified fact를 복사한다. 넣은 수를 돌려준다.
+
+    개정판은 조문을 전부 새 행으로 넣으므로, 이게 없으면 안 바뀐 조문까지 법령 전체가 다시 분류·추출 큐로 나간다.
+    멱등이라 몇 번 불러도 된다. 판 적재 직후와 내보내기 직전에 부른다: 개정판이 들어온 뒤에 옛 조문으로
+    나갔던 배치 결과가 가져와지면, 그 fact도 다음 내보내기 전에 새 조문으로 넘어간다.
+    위임 대상(하위 법령) 본문이 바뀌었는지는 보지 않는다 (추출 맥락이 옛것일 수 있음, 개선안 검토에서 받아들인 위험)."""
+    cur = conn.execute(
+        """insert into fact (provision_id, text_hash, batch_id, is_benefit, payload, status, extractor, carried_from)
+           select np.id, f.text_hash, f.batch_id, f.is_benefit, f.payload, 'verified', f.extractor,
+                  coalesce(f.carried_from, f.id)
+           from fact f
+           join provision op on op.id = f.provision_id
+           join source_document od on od.id = op.document_id
+           join provision np on np.article_key = op.article_key and np.text_hash = f.text_hash
+                            and np.id <> op.id and np.effective_to is null
+           join source_document nd on nd.id = np.document_id and nd.law_id = od.law_id
+           where f.status = 'verified' and f.text_hash = op.text_hash
+           on conflict (provision_id, text_hash, extractor) do nothing""")
+    return cur.rowcount
 
 
 def _close_previous_version(conn, law_id: str, new_doc_id: int, effective: date, new_ids: dict[str, int]) -> None:
@@ -99,37 +122,75 @@ def _close_previous_version(conn, law_id: str, new_doc_id: int, effective: date,
             conn.execute("update fact set status = 'stale' where provision_id = %s and status <> 'rejected'", (old_id,))
 
 
-def store_links(conn, source_ids: dict[str, int], target_ids: dict[str, dict[str, int]], links: list[DelegationLink]) -> int:
-    """target_ids: {'decree': {article_key: id}, 'rule': {...}}"""
-    n = 0
+def store_links(conn, source_ids: dict[str, dict[str, int]], target_ids: dict[str, dict[str, int]],
+                links: list[DelegationLink]) -> int:
+    """source_ids: {'law': {article_key: id}, 'decree': {...}}, target_ids: {'decree': {...}, 'rule': {...}}.
+    (원천, 문구)마다 대상 집합을 새로 맞춘다: 없어진 대상은 지우고 새 대상은 넣는다. 새로 넣은 행 수를 돌려준다."""
+    wanted: dict[tuple[int, str], set[int | None]] = {}
+    methods: dict[tuple[int, str], str] = {}
     for lk in links:
-        src = source_ids.get(lk.source_key)
+        src = source_ids.get(lk.source_level, {}).get(lk.source_key)
         if src is None:
             continue
         tgt = target_ids.get(lk.target_level, {}).get(lk.target_key) if lk.target_key else None
-        exists = conn.execute(
-            "select 1 from delegation where source_id = %s and phrase = %s", (src, lk.phrase)
-        ).fetchone()
-        if exists:
-            conn.execute("update delegation set target_id = %s where source_id = %s and phrase = %s", (tgt, src, lk.phrase))
-        else:
-            conn.execute(
-                "insert into delegation (source_id, target_id, phrase, method) values (%s, %s, %s, %s)",
-                (src, tgt, lk.phrase, lk.method),
-            )
+        wanted.setdefault((src, lk.phrase), set()).add(tgt)
+        methods[(src, lk.phrase)] = lk.method
+    n = 0
+    for (src, phrase), targets in wanted.items():
+        if len(targets) > 1:
+            targets.discard(None)
+        have = {r["target_id"] for r in conn.execute(
+            "select target_id from delegation where source_id = %s and phrase = %s", (src, phrase))}
+        for gone in have - targets:
+            conn.execute("delete from delegation where source_id = %s and phrase = %s and target_id is not distinct from %s",
+                         (src, phrase, gone))
+        for new in targets - have:
+            conn.execute("insert into delegation (source_id, target_id, phrase, method) values (%s, %s, %s, %s)",
+                         (src, new, phrase, methods[(src, phrase)]))
             n += 1
     return n
 
 
 def current_provisions(conn, law_name: str) -> dict[str, dict]:
-    """해당 법령의 가장 최근 판 조문."""
+    """해당 법령의 현행 조문. 내보내기와 같은 기준(effective_to is null)으로, 이름이 아니라 law_id로 묶는다
+    (법령명이 바뀐 판이 섞여 있어도 같은 법령)."""
     doc = conn.execute(
-        "select id from source_document where law_name = %s order by effective desc, id desc limit 1", (law_name,)
+        "select law_id from source_document where law_name = %s order by effective desc, id desc limit 1", (law_name,)
     ).fetchone()
     if not doc:
         return {}
     return {r["article_key"]: r for r in conn.execute(
-        "select id, article_key, text from provision where document_id = %s", (doc["id"],))}
+        """select p.id, p.article_key, p.text from provision p join source_document d on d.id = p.document_id
+           where d.law_id = %s and p.effective_to is null order by d.effective, d.id""", (doc["law_id"],))}
+
+
+def link_facts(conn) -> int:
+    """verified 추출 fact 중 parent_ref가 있고 아직 안 이은 것을 현행 조문으로 잇는다 (fact_link). 멱등."""
+    from kloe.link.facts import base_law_name, parse_ref, resolve
+
+    rows = conn.execute(
+        """select f.id, f.payload->>'parent_ref' as ref, p.id as pid, p.article_key, d.law_name
+           from fact f join provision p on p.id = f.provision_id join source_document d on d.id = p.document_id
+           where f.stage = 'extract' and f.status = 'verified' and p.effective_to is null
+             and coalesce(f.payload->>'parent_ref', '') <> ''
+             and not exists (select 1 from fact_link l where l.fact_id = f.id)""").fetchall()
+    cache: dict[str, dict[str, dict]] = {}
+    n = 0
+    for r in rows:
+        base = base_law_name(r["law_name"])
+        for ref in parse_ref(r["ref"]):
+            name = {"law": base, "decree": f"{base} 시행령"}.get(ref.level, r["law_name"])
+            if name not in cache:
+                cache[name] = current_provisions(conn, name)
+            provs = cache[name]
+            for key in resolve(ref, r["article_key"], set(provs)):
+                if provs[key]["id"] == r["pid"]:
+                    continue
+                n += conn.execute(
+                    "insert into fact_link (fact_id, target_id, ref) values (%s, %s, %s) on conflict do nothing",
+                    (r["id"], provs[key]["id"], r["ref"])).rowcount
+    conn.commit()
+    return n
 
 
 def provisions_as_of(conn, law_id: str, as_of: date) -> list[dict]:
@@ -189,32 +250,98 @@ def store_programs(conn, records: list[ProgramRecord], *, file_path: str, sha256
     return new_programs, new_versions
 
 
+# 소스의 가장 최근 수집보다 이만큼 앞서 마지막으로 보인 공고는 목록에서 사라진 것으로 본다 (K-Startup은 모집중만 준다).
+# 수집이 며칠 실패해도 소스별 최근 수집 기준이라 전부 퇴출되지는 않는다.
+RETIRE_AFTER = "3 days"
+
+_LIVE = f"""(p.apply_end is null or p.apply_end >= %(today)s)
+   and p.last_seen >= (select max(q.last_seen) from program q where q.source = p.source) - interval '{RETIRE_AFTER}'"""
+
+# 내보내기 순서: K-Startup(적고 마감이 분명) → 마감일 있는 것(이른 순) → 지원유형(현금·감면·융자 → 이용권·현물 → 나머지).
+# 거르지 않고 순서만 정한다. 지원유형 순위는 이득이 큰 쪽을 먼저 보려는 추정이다.
+_PROGRAM_ORDER = r"""
+   (p.source <> 'kstartup'), (p.apply_end is null), p.apply_end,
+   case when v.text ~ '지원유형: [^\n]*(현금|감면|융자|세제)' then 0
+        when v.text ~ '지원유형: [^\n]*(이용권|현물)' then 1 else 2 end,
+   v.id"""
+
+
 def export_program_candidates(conn, limit: int, exclude: set[int], today: date | None = None) -> list[dict]:
-    """현행 판 중 마감이 안 지났고(마감 미상 포함) 추출 fact가 없는 것."""
+    """현행 판 중 마감이 안 지났고(마감 미상 포함), 목록에서 사라지지 않았고, 추출 fact가 없는 것."""
     rows = conn.execute(
-        """select v.id as version_id, v.text, v.text_hash, p.source, p.title, p.apply_end
+        f"""select v.id as version_id, v.text, v.text_hash, p.source, p.title, p.apply_end
            from program_version v join program p on p.id = v.program_id
-           where v.superseded_at is null
-             and (p.apply_end is null or p.apply_end >= %s)
+           where v.superseded_at is null and {_LIVE}
              and not exists (select 1 from program_fact f where f.version_id = v.id and f.status <> 'rejected')
-           order by v.id""",
-        (today or date.today(),),
+           order by {_PROGRAM_ORDER}""",
+        {"today": today or date.today()},
     )
     return [r for r in rows if r["version_id"] not in exclude][:limit]
 
 
 def open_programs(conn, today: date | None = None) -> list[dict]:
-    """마감 전 공고와 추출 결과 (kloe programs)."""
+    """마감 전이고 목록에서 사라지지 않은 공고와 추출 결과 (kloe programs)."""
     return list(conn.execute(
-        """select p.source, p.external_id, p.title, p.agency, p.apply_end, p.url, f.payload
+        f"""select p.source, p.external_id, p.title, p.agency, p.apply_end, p.url, f.payload
            from program p
            join program_version v on v.program_id = p.id and v.superseded_at is null
            left join lateral (select payload from program_fact pf where pf.version_id = v.id and pf.status = 'verified'
                               order by pf.id desc limit 1) f on true
-           where p.apply_end is null or p.apply_end >= %s
+           where {_LIVE}
            order by p.apply_end nulls last, p.id""",
-        (today or date.today(),),
+        {"today": today or date.today()},
     ))
+
+
+# ---------- 추출 감사 ----------
+
+# 표본 층: role별로 같은 몫 + uncertain이 있는 것 조금. 합이 1.
+AUDIT_STRATA = (("none", 0.3), ("condition", 0.3), ("benefit", 0.3), ("uncertain", 0.1))
+
+
+def export_audit_candidates(conn, sample: int, exclude: set[int], law_filter: str | None = None) -> list[dict]:
+    """감사 표본: 현행 조문의 verified 추출 fact 중 아직 감사하지 않은 것을 층마다 골고루 고른다.
+    순서는 md5(fact id)라 실행마다 같고, 먼저 적재된 법령에 몰리지 않는다. law_filter는 법령명 부분 문자열 (예: 시행)."""
+    rows = list(conn.execute(
+        """select f.id as fact_id, f.text_hash, f.payload, p.article_key, p.text, d.law_name
+           from fact f join provision p on p.id = f.provision_id join source_document d on d.id = p.document_id
+           where f.status = 'verified' and f.payload->>'stage' = 'extract' and p.effective_to is null
+             and p.text_hash = f.text_hash and f.carried_from is null
+             and not exists (select 1 from audit a where a.fact_id = f.id)
+             and (%(lf)s::text is null or position(%(lf)s::text in d.law_name) > 0)
+           order by md5(f.id::text)""",
+        {"lf": law_filter}))
+    rows = [r for r in rows if r["fact_id"] not in exclude]
+
+    def stratum(r):
+        if r["payload"].get("uncertain"):
+            return "uncertain"
+        return r["payload"].get("role") or "benefit"
+
+    picked: list[dict] = []
+    for name, share in AUDIT_STRATA:
+        picked += [r for r in rows if stratum(r) == name][: round(sample * share)]
+    rest = [r for r in rows if r not in picked]  # 어떤 층이 모자라면 남은 것으로 채운다
+    return (picked + rest)[:sample]
+
+
+def audit_summary(conn) -> dict:
+    """감사 결과 집계: 전체·ok 수, 필드×방향별 지적 수, 놓친(lost) 지적 목록."""
+    rows = list(conn.execute(
+        """select a.ok, a.payload, a.extractor, p.article_key, d.law_name, f.payload as fact
+           from audit a join fact f on f.id = a.fact_id join provision p on p.id = f.provision_id
+           join source_document d on d.id = p.document_id order by d.law_name, p.id"""))
+    by_field: dict[tuple[str, str], int] = {}
+    lost = []
+    for r in rows:
+        for i in r["payload"].get("issues", []):
+            key = (i["field"].split(".", 1)[0], i["direction"])
+            by_field[key] = by_field.get(key, 0) + 1
+            if i["direction"] == "lost":
+                lost.append({"law_name": r["law_name"], "article_key": r["article_key"],
+                             "role": r["fact"].get("role"), **i})
+    return {"total": len(rows), "ok": sum(r["ok"] for r in rows), "by_field": by_field, "lost": lost,
+            "extractors": sorted({r["extractor"] for r in rows})}
 
 
 # ---------- 배치 ----------
@@ -237,7 +364,7 @@ def export_candidates(conn, stage: str, limit: int, exclude: set[int], recheck: 
     elif stage == "classify":
         base += f"""
         and exists (select 1 from fact f where {cls} and not f.is_benefit
-                    and (p.text ~ '(대통령령|재정경제부령)으로 정한다' or f.payload->>'reason' ~ '위임'))
+                    and (p.text ~ '(대통령령|총리령|[가-힣]+부령)으로 정한다' or f.payload->>'reason' ~ '위임'))
         and not exists (select 1 from fact f where {cls} and f.is_benefit)
         and not exists (select 1 from fact f where {cls} and f.extractor like %(ver)s)
         and exists (select 1 from provision s join fact f on f.provision_id = s.id and f.text_hash = s.text_hash
@@ -265,6 +392,120 @@ def export_candidates(conn, stage: str, limit: int, exclude: set[int], recheck: 
     return rows
 
 
+def sync_dropped(conn, work_dir: Path, stage: str) -> int:
+    """failed/<stage>/dropped.jsonl을 dropped_job으로 옮기고 파일은 dropped-log.jsonl 뒤에 붙인다 (멱등)."""
+    from kloe.queue import export as qx
+
+    path = qx.stage_dir(work_dir, "failed", stage) / qx.DROPPED
+    if not path.exists():
+        return 0
+    key = qx.TARGET_KEY.get(stage, "provision_id")
+    rows = qx.read_jsonl(path)
+    n = 0
+    for j in rows:
+        n += conn.execute(
+            """insert into dropped_job (stage, target_id, text_hash, reasons) values (%s, %s, %s, %s)
+               on conflict do nothing""",
+            (stage, int(j[key]), j.get("text_hash", ""), Jsonb(j.get("drop_reasons", []))),
+        ).rowcount
+    conn.commit()
+    with open(path.with_name(qx.DROPPED_LOG), "a", encoding="utf-8") as f:
+        f.write(path.read_text(encoding="utf-8"))
+    path.unlink()
+    return n
+
+
+def dropped_ids(conn, stage: str) -> set[int]:
+    return {r["target_id"] for r in conn.execute("select target_id from dropped_job where stage = %s", (stage,))}
+
+
+def undrop(conn, stage: str) -> int:
+    n = conn.execute("delete from dropped_job where stage = %s", (stage,)).rowcount
+    conn.commit()
+    return n
+
+
+# ---------- 아이디어 ----------
+
+def store_ideas(conn, job: dict, result, batch_id: int) -> int:
+    """검증 통과한 아이디어를 넣는다. 근거 집합(렌즈 포함)이 이미 있는 아이디어와 같으면 idea_duplicate에만 남긴다."""
+    from kloe.ideas import evidence_hash, evidence_of
+
+    n = 0
+    for idea in result.ideas:
+        ev = evidence_of(idea)
+        h = evidence_hash(job["lens"], ev)
+        cur = conn.execute(
+            """insert into idea (week, title, body, lens, summary, payload, evidence, evidence_hash, extractor, batch_id)
+               values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) on conflict (evidence_hash) do nothing""",
+            (job["week"], idea.title, idea.body, job["lens"], idea.summary,
+             Jsonb(idea.model_dump(mode="json", include={"claims", "to_check"})), Jsonb(ev), h, result.extractor, batch_id))
+        if cur.rowcount:
+            n += 1
+        else:
+            conn.execute("insert into idea_duplicate (evidence_hash, batch_id, title) values (%s, %s, %s)",
+                         (h, batch_id, idea.title))
+    return n
+
+
+def recheck_ideas(conn) -> int:
+    """근거 fact가 stale·rejected가 됐거나 조문이 현행이 아니면 아이디어를 needs_recheck로 (N3). 바꾼 수."""
+    n = conn.execute(
+        """update idea i set status = 'needs_recheck'
+           where i.status in ('proposed', 'approved')
+             and exists (select 1 from jsonb_array_elements(i.evidence) e
+                         left join fact f on f.id = (e->>'id')::bigint
+                         left join provision p on p.id = f.provision_id
+                         where e->>'kind' = 'fact'
+                           and (f.id is null or f.status <> 'verified' or p.effective_to is not null))""").rowcount
+    conn.commit()
+    return n
+
+
+def store_review_marks(conn, marks) -> tuple[int, int]:
+    """점검 표시를 review에 넣고 idea 상태를 바꾼다. 이미 점검한 아이디어는 건너뛴다. (넣은 수, 건너뛴 수)"""
+    done = skipped = 0
+    for m in marks:
+        if not conn.execute("select 1 from idea where id = %s", (m.idea_id,)).fetchone() or conn.execute(
+                "select 1 from review where target_kind = 'idea' and target_id = %s", (m.idea_id,)).fetchone():
+            skipped += 1
+            continue
+        conn.execute("insert into review (target_kind, target_id, verdict, note, diff) values ('idea', %s, %s, %s, %s)",
+                     (m.idea_id, m.verdict, m.note, Jsonb({"tags": m.tags})))
+        conn.execute("update idea set status = %s where id = %s",
+                     ("approved" if m.verdict == "approve" else "rejected", m.idea_id))
+        done += 1
+    conn.commit()
+    return done, skipped
+
+
+def idea_metrics(conn) -> dict:
+    """B6: 정답 없이 볼 수 있는 것만. keep 비율은 참고."""
+    q = lambda sql, *a: list(conn.execute(sql, a))  # noqa: E731
+    batches = q("""select count(*) as n, count(*) filter (where fail_reason like 'failed=%%') as failed
+                   from batch where stage = 'ideate' and ingested_at is not null""")[0]
+    return {
+        "batches": batches["n"], "batches_with_failures": batches["failed"],
+        "dropped_jobs": q("select count(*) as n from dropped_job where stage = 'ideate'")[0]["n"],
+        "by_week_lens": [(r["week"], r["lens"], r["n"]) for r in q(
+            "select week, lens, count(*) as n from idea group by 1, 2 order by 1, 2")],
+        "duplicates_blocked": q("select count(*) as n from idea_duplicate")[0]["n"],
+        "distinct_laws": q("""select count(distinct d.law_id) as n from idea i, jsonb_array_elements(i.evidence) e
+                              join fact f on f.id = (e->>'id')::bigint join provision p on p.id = f.provision_id
+                              join source_document d on d.id = p.document_id where e->>'kind' = 'fact'""")[0]["n"],
+        "distinct_facts": q("""select count(distinct e->>'id') as n from idea i, jsonb_array_elements(i.evidence) e
+                               where e->>'kind' = 'fact'""")[0]["n"],
+        "status": {r["status"]: r["n"] for r in q("select status, count(*) as n from idea group by 1")},
+        "drop_tags": {r["tag"]: r["n"] for r in q(
+            """select t as tag, count(*) as n from review r, jsonb_array_elements_text(coalesce(r.diff->'tags', '[]')) t
+               where r.target_kind = 'idea' group by 1 order by 2 desc""")},
+        "wrong_fact_ids": [r["id"] for r in q(  # 점검에서 wrong_fact가 붙은 아이디어의 근거 fact: L1 오류 후보
+            """select distinct (e->>'id')::bigint as id from review r join idea i on i.id = r.target_id,
+                      jsonb_array_elements(i.evidence) e
+               where r.target_kind = 'idea' and r.diff->'tags' ? 'wrong_fact' and e->>'kind' = 'fact' order by 1""")],
+    }
+
+
 def max_batch_number(conn, stage: str) -> int:
     """이 단계에 기록된 가장 큰 배치 번호. work/를 지워도 새 배치 이름이 옛 기록과 겹치지 않게 한다."""
     row = conn.execute(
@@ -290,6 +531,18 @@ def store_report(conn, report: IngestReport) -> int:
     batch_id = b["id"] if b else record_batch(conn, report.stage, report.batch)
     n = 0
     for job, result in report.accepted:
+        if report.stage == "ideate":
+            n += store_ideas(conn, job, result, batch_id)
+            continue
+        if report.stage == "audit":
+            cur = conn.execute(
+                """insert into audit (fact_id, batch_id, ok, payload, extractor)
+                   values (%s, %s, %s, %s, %s) on conflict (fact_id, extractor) do nothing""",
+                (job["fact_id"], batch_id, result.ok,
+                 Jsonb(result.model_dump(mode="json", exclude={"job_id", "extractor"})), result.extractor),
+            )
+            n += cur.rowcount
+            continue
         if report.stage == "program":
             cur = conn.execute(
                 """insert into program_fact (version_id, batch_id, payload, status, extractor)
@@ -312,7 +565,7 @@ def store_report(conn, report: IngestReport) -> int:
         )
         n += cur.rowcount
     # 같은 조문·해시·extractor 결과가 이미 있으면 넣지 않는다. extractor의 skill 이름이 단계마다 달라야 하는 이유.
-    duplicates = len(report.accepted) - n
+    duplicates = 0 if report.stage == "ideate" else len(report.accepted) - n
     parts = []
     if not report.ok:
         parts.append(f"failed={len(report.failed)} missing={len(report.missing)}")

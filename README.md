@@ -26,6 +26,7 @@ kloe nightly
 pytest                                   # DB 없이 도는 테스트
 KLOE_TEST_DATABASE_URL=postgresql://kloe:kloe@localhost:5432/kloe_test pytest   # Postgres 통합 테스트 포함 (public 스키마를 지운다)
 ```
+- GitHub Actions(`.github/workflows/test.yml`)가 push·PR마다 Postgres 16 컨테이너를 띄워 통합 테스트까지 돌린다.
 
 ## 배치 규칙 (L1 에이전트용)
 
@@ -42,7 +43,10 @@ launchctl kickstart gui/$(id -u)/com.kloe.nightly   # 지금 한 번 실행
 tail -f ~/Library/Logs/kloe/nightly.log
 ```
 
-`scripts/nightly.sh`가 Docker와 Postgres를 띄우고 `kloe migrate` → `kloe requeue --stale 6h` → `kloe nightly`를 돌린다. 내보내기는 실행마다 최대 5000건이라, 아직 안 나간 조문이 첫 실행에 다 나간다. 그 시각에 Mac이 잠자고 있으면 깨어날 때 실행된다.
+`scripts/nightly.sh`가 Docker와 Postgres를 띄우고 `kloe migrate` → `kloe requeue --stale 6h` → `kloe nightly` → 백업 → `kloe status` 한 줄 요약을 돌린다.
+- 단계가 실패하면 로그에 `실패: <단계>`를 남기고 macOS 알림을 띄운다. migrate가 실패하면 거기서 멈추고, 나머지는 실패해도 다음 단계로 간다.
+- 백업은 `backups/`(git 제외)에 DB 덤프(`pg_dump -Fc`)와 `work/failed` 묶음을 최근 7개씩 둔다. 같은 디스크라 디스크 고장에는 대비가 안 되니 가끔 다른 곳으로 복사한다. 되살리기: `docker compose exec -T postgres pg_restore -U kloe -d kloe --clean < backups/kloe-<시각>.dump`
+- 처리할 배치가 queue에 있으면 알림으로 알려 준다. 지금 상태는 언제든 `.venv/bin/kloe status`. 내보내기는 실행마다 최대 5000건이라, 아직 안 나간 조문이 첫 실행에 다 나간다. 그 시각에 Mac이 잠자고 있으면 깨어날 때 실행된다.
 
 ## L1 헤드리스 실행 (기본)
 
@@ -61,7 +65,7 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 - `claude`가 PATH에 없거나(nvm 등) launchd에서 돌릴 때는 `KLOE_CLAUDE_BIN`에 전체 경로를 넣는다.
 - 실패한 배치(종료 코드 오류, 결과 없음, 줄 수 불일치, 시간 초과)는 queue로 돌아가고 같은 실행 안에서는 다시 잡지 않는다.
 - 에이전트는 `work/claimed/`와 `skills/`만 읽고 `work/out/`에만 쓸 수 있다 (공고 본문에 섞인 지시로 저장소 파일을 고치지 못하게).
-- 검증에서 두 번 실패한 job은 `work/failed/<stage>/dropped.jsonl`에 남고 다시 내보내지 않는다. 다시 돌리려면 그 파일을 지운다.
+- 검증에서 두 번 실패한 job은 DB의 `dropped_job`에 이유와 함께 남고 (같은 본문이면) 다시 내보내지 않는다. 기록은 `work/failed/<stage>/dropped-log.jsonl`. 다시 돌리려면 `.venv/bin/kloe undrop --stage extract`.
 - extractor는 `cc:<모델>:<skill>@<버전>`. 검증은 그대로 `kloe ingest`가 한다.
 
 ### classify 다시 돌리기 (skill을 고쳤을 때)
@@ -71,8 +75,52 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 .venv/bin/kloe agent --stage classify --model haiku --parallel 2 --max-batches 10 --ingest
 ```
 
+- 법령 개정판이 들어와도 본문이 같은 조문은 이전 결과(fact)를 이어받아 다시 나가지 않는다 (`fact.carried_from`). 본문이 바뀐 조문만 다시 분류·추출된다.
 - 현재 skill 버전의 결과가 이미 있는 조문은 다시 나가지 않는다. 0.1 결과와 0.2 결과가 같이 남고, extract는 둘 중 하나라도 `true`면 그 조문을 내보낸다.
 - 사용량 한도가 걱정되면 `--parallel`과 `--max-batches`를 줄인다.
+
+### 조문 잇기와 조회
+
+- 위임: 법률의 "대통령령/○○부령으로 정하는 …"을 시행령·시행규칙으로, 시행령의 "○○부령으로 정하는 …"을 시행규칙("영 제N조")으로 잇는다. 같은 항을 콕 집어 가리키는 하위 조문이 여럿이면 모두 잇는다.
+- 추출 결과의 `parent_ref`("법 제29조의4제1항", "영 제10조", "제2항")는 nightly가 현행 조문으로 풀어 `fact_link`에 넣는다. 손으로는 `.venv/bin/kloe link-facts`.
+- 추출 결과를 SQL로 볼 때는 `extract_fact` 뷰 (현행 조문의 verified 추출, role·benefit_type·rate·cap_krw·sunset 등을 열로 편 것).
+
+```sql
+select law_name, article_key, role, benefit_type, rate, cap_krw, sunset from extract_fact where role = 'benefit' order by sunset nulls last;
+```
+
+### 추출 감사 (kloe-audit)
+
+정답 셋 없이 추출 품질을 보는 방법이다. 상위 모델이 검증을 통과한 추출 결과 표본을 원문과 다시 대조해, 놓친 혜택(`lost`)·틀린 값(`wrong`)·지어낸 내용(`extra`)을 필드와 원문 인용으로 지적한다. fact는 고치지 않고 표만 남긴다.
+
+```bash
+.venv/bin/kloe export --stage audit                       # 기본 50건, role(none·condition·benefit 30%씩, uncertain 10%)으로 층화
+.venv/bin/kloe agent --stage audit --model opus --parallel 1 --ingest
+.venv/bin/kloe audit-report                               # reports/audit-<날짜>.md: 필드별 lost·wrong·extra 수, 놓친 것 목록
+```
+
+- 이어받은 fact는 표본에서 뺀다. 한 번 감사한 fact는 다시 나가지 않는다. 특정 법령만 보려면 `--law-filter 조세특례제한법`.
+- 감사는 nightly가 자동으로 내보내지 않는다. 추출 시험 배치 뒤 한 번, 그다음은 extract skill 버전이 바뀔 때만 돌린다.
+- 지적이 한 필드에 몰리면(예: `benefit_size`의 `lost`) skill을 고치고 다시 추출할지 판단한다.
+
+## 아이디어와 점검 (kloe-ideate)
+
+시스템이 아이디어를 가져오고 사람은 점검만 한다. 정답 셋은 없다.
+
+```bash
+.venv/bin/kloe export --stage ideate                     # 렌즈 4개(combo 조합, time 시간, gap 허점, business 사업화)마다 배치 하나
+.venv/bin/kloe agent --stage ideate --model opus --parallel 1 --timeout 2400 --ingest
+.venv/bin/kloe review-file                               # reports/YYYY-Www.review.md
+# 파일에서 블록마다 keep 또는 drop에 x, drop이면 사유 태그(obvious, wrong_fact, infeasible, duplicate, other)
+.venv/bin/kloe review-ingest reports/2026-W47.review.md
+.venv/bin/kloe metrics                                   # 검증 실패, 처리량, 중복 차단, 근거 다양성, drop 사유
+```
+
+- 입력은 코드가 만든다. 혜택 fact가 있는 조마다 묶음(그 조의 fact + parent_ref로 그 조를 가리키는 요건 + 위임 대상 조문의 fact + 같은 조의 배제·추징)을 만들고, 묶음마다 몇 줄짜리 카드를 렌더한다 (저장하지 않음). 렌즈마다 전체 카드 + 코드가 고른 상세 묶음 8개(인용 포함)를 `work/claimed/ideate/catalog-<주>-<렌즈>.md` 로 쓴다. 내보낼 때 카탈로그 글자 수를 찍으니, 처음엔 이 크기부터 본다.
+- 검증: 주장마다 근거(`fact`, `program`, `delegation`, `change`)가 카탈로그에 있어야 하고, 인용은 근거 fact의 quotes 안에 글자 그대로, 율·한도는 근거 값과 같아야 한다. 조합은 서로 다른 묶음 2개 이상, 시간은 일몰이나 개정 이벤트, 허점은 위임 공백이 근거에 있어야 한다. 근거 집합이 이미 있는 아이디어와 같으면 넣지 않고 중복으로 센다.
+- 이번 주에 이미 아이디어를 낸 렌즈는 다시 내보내지 않는다. 한 렌즈만: `--lens time`.
+- 근거 fact가 stale이 되면(개정) 아이디어는 `needs_recheck` 가 되고 점검 파일에 ⚠로 다시 나온다.
+- 점검에서 `wrong_fact` 가 붙은 아이디어의 근거 fact는 `kloe metrics` 의 `wrong_fact_ids` 로 모인다 (추출 오류 후보).
 
 ## 지원사업·장학금·창업 공고 (보조금24, K-Startup)
 
@@ -92,6 +140,9 @@ export KLOE_DATA_GO_KR_KEY=...   # ~/.zshrc 에. nightly.sh 가 실행할 때 �
 - `kloe nightly` 가 매일 두 소스를 받고(키가 없으면 건너뜀), 마감이 안 지난 공고를 `work/queue/program/` 으로 내보낸다.
 - 공고는 분류 없이 `kloe-extract-program` 스킬이 대상 요건, 금액, 신청 기간, 근거법령을 인용과 함께 뽑는다. 인용과 근거법령이 원문에 없으면 검증에서 떨어진다.
 - 본문이 바뀌면 새 판이 생기고 이전 추출 결과는 stale이 되어 다시 나간다.
+- 본문에는 문의처·구비서류를 넣지 않는다. 전화번호만 바뀌어도 새 판이 생겨 다시 추출되기 때문이다. 이 규칙이 들어간 뒤 첫 수집에서 모든 공고가 한 번씩 새 판이 된다 (그 전에 내보낸 `work/queue/program/` 배치는 지우고 다시 내보낸다).
+- 같은 소스의 가장 최근 수집보다 3일 넘게 목록에 안 보인 공고는 퇴출로 보고 내보내기와 `kloe programs` 에서 뺀다.
+- 내보내기는 거르지 않고 순서만 정한다: K-Startup → 마감일 있는 것(이른 순) → 지원유형(현금·감면·융자 → 이용권·현물 → 나머지). `--max-batches` 로 나눠 돌린다. 먼저 K-Startup 11배치 + 보조금24 10배치로 사용량 한도를 잰다.
 - 근거법령과 이미 모은 법령의 연결: `select * from program_law_basis;`
 - 주소, 키 파라미터(`serviceKey`), 응답 필드 이름은 2026-11-12 실제 응답으로 확인했다. 보조금24 전체 약 1만 1천 건, K-Startup 모집중 약 200건이다. 보조금24 신청기한은 연도 없는 자유 글이 많아서 그런 공고는 마감일이 비고, 마감일이 비면 계속 추출 대상이 된다.
 

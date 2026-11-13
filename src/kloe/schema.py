@@ -164,4 +164,62 @@ class ProgramResult(_Strict):
     fact: ProgramPayload
 
 
-RESULT_MODELS: dict[str, type[BaseModel]] = {"classify": ClassifyResult, "extract": ExtractResult, "program": ProgramResult}
+# ---------- 추출 감사 (kloe-audit) ----------
+# 정답 셋이 없으므로, 상위 모델이 추출 표본을 원문과 다시 대조해 계통 오류를 찾는다. fact는 고치지 않는다.
+AuditDirection = Literal["lost", "wrong", "extra"]  # lost: 혜택·요건·한도를 놓침 / wrong: 값·분류가 틀림 / extra: 원문에 없는 것을 넣음
+
+
+class AuditIssue(_Strict):
+    field: str  # FactPayload 필드 이름. 하위 필드는 점 표기 (benefit_size.rate)
+    direction: AuditDirection
+    problem: str = Field(min_length=1)
+    quote: str = Field(min_length=1)  # 지적의 근거가 되는 조문 원문 구간 (글자 그대로)
+    suggested: str | None = None
+
+
+class AuditResult(_Strict):
+    job_id: str
+    extractor: str = Field(pattern=EXTRACTOR_PATTERN)
+    ok: bool
+    issues: list[AuditIssue] = []
+
+    @model_validator(mode="after")
+    def _ok_matches_issues(self) -> AuditResult:
+        if self.ok and self.issues:
+            raise ValueError("ok=true인데 issues가 있다")
+        if not self.ok and not self.issues:
+            raise ValueError("ok=false인데 issues가 없다")
+        return self
+
+
+# ---------- 아이디어 (kloe-ideate) ----------
+Lens = Literal["combo", "time", "gap", "business"]  # 조합 / 시간(일몰·개정) / 허점(위임 공백) / 사업화
+EvidenceKind = Literal["fact", "program", "delegation", "change"]
+
+
+class Claim(_Strict):
+    """아이디어를 받치는 주장 하나. fact·program 근거는 인용을 달고, 수치를 쓰면 근거의 값과 같아야 한다."""
+    text: str = Field(min_length=1)
+    kind: EvidenceKind
+    id: int
+    quote: str | None = None  # 근거 fact·공고의 quotes 중 하나에서 글자 그대로
+    rate: float | None = Field(default=None, ge=0, le=1)
+    cap_krw: int | None = Field(default=None, ge=0)
+
+
+class IdeaItem(_Strict):
+    title: str = Field(min_length=1, max_length=120)
+    summary: str = Field(min_length=1, max_length=300)  # 한 줄
+    body: str = Field(min_length=1)
+    claims: list[Claim] = Field(min_length=1)
+    to_check: list[str] = []  # 사람이 원문·실무로 확인할 것
+
+
+class IdeateResult(_Strict):
+    job_id: str
+    extractor: str = Field(pattern=EXTRACTOR_PATTERN)
+    ideas: list[IdeaItem] = Field(max_length=12)
+
+
+RESULT_MODELS: dict[str, type[BaseModel]] = {"classify": ClassifyResult, "extract": ExtractResult, "program": ProgramResult,
+                                             "audit": AuditResult, "ideate": IdeateResult}
