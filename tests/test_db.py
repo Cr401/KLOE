@@ -129,6 +129,7 @@ def test_audit_samples_extract_facts_and_reports(conn, tmp_path):
     report = cli.write_audit_report(conn, tmp_path / "reports").read_text(encoding="utf-8")
     assert "감사한 fact 2건, 문제 없음 1건" in report
     assert "| benefit_size | 1 | 0 | 0 |" in report and "공제한도는 3천만원" in report
+    assert "## 추출 " in report and "### 놓친 것 (lost)" in report and "### 틀린 것" not in report
 
 
 def test_fact_links_view_and_dropped_jobs(conn, tmp_path):
