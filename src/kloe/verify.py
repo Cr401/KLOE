@@ -5,7 +5,15 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from kloe.models import normalize_ws
+import unicodedata
+
+from kloe.models import normalize_ws as _normalize_ws
+
+
+def normalize_ws(text: str) -> str:
+    """인용 대조용: 공백 정리 + NFC. 법령 본문에는 호환 한자(예: 零 U+F9B2)가 섞여 오는데 모델은 표준 한자(U+96F6)로
+    쓰므로 NFC로 맞춘다. 조문 해시(models.text_hash)는 바꾸지 않는다 (바꾸면 기존 조문이 개정된 것처럼 보인다)."""
+    return _normalize_ws(unicodedata.normalize("NFC", text))
 from kloe.schema import (AuditResult, BenefitSize, ClassifyResult, ExtractResult, FactPayload, IdeaItem, IdeateResult,
                          ProgramResult, Quote)
 
