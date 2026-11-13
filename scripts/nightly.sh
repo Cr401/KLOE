@@ -34,10 +34,44 @@ for _ in $(seq 1 30); do
   docker compose exec -T postgres pg_isready -U kloe >/dev/null 2>&1 && break; sleep 2
 done
 
-log "migrate"
-.venv/bin/kloe migrate
-log "requeue 시작"
-.venv/bin/kloe requeue --stale 6h
-log "nightly 시작"
-.venv/bin/kloe nightly
-log "nightly 끝"
+# 단계가 실패해도 조용히 끝나지 않게: 실패를 기록하고, 뒤 단계가 그 결과에 기대지 않으면 계속한다.
+FAILED=""  # 실패한 단계 이름들 (macOS 기본 bash 3.2는 set -u에서 빈 배열을 못 다뤄 문자열로 둔다)
+step() {  # step <이름> <명령...>
+  local name="$1"; shift
+  log "$name 시작"
+  if "$@"; then log "$name 끝"; else local rc=$?; log "실패: $name (exit $rc)"; FAILED="$FAILED $name"; return $rc; fi
+}
+notify() {  # macOS 알림. 실패해도 무시
+  /usr/bin/osascript -e "display notification \"$1\" with title \"KLOE nightly\"" >/dev/null 2>&1 || true
+}
+
+# migrate가 안 되면 뒤는 의미가 없으니 멈춘다
+step migrate .venv/bin/kloe migrate || { notify "migrate 실패. 로그를 봐라"; exit 1; }
+step requeue .venv/bin/kloe requeue --stale 6h || true
+step nightly .venv/bin/kloe nightly || true
+
+# 백업: DB 덤프와 work/failed(버린 job 목록)를 backups/ 에 날짜별로, 최근 7개만 둔다
+BACKUP_DIR="$REPO/backups"
+mkdir -p "$BACKUP_DIR"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+backup() {
+  docker compose exec -T postgres pg_dump -U kloe -Fc kloe > "$BACKUP_DIR/kloe-$STAMP.dump" &&
+  { [[ ! -d work/failed ]] || tar -czf "$BACKUP_DIR/work-failed-$STAMP.tgz" work/failed; }
+}
+if step backup backup; then
+  for prefix in kloe- work-failed-; do
+    ls -1t "$BACKUP_DIR"/"$prefix"* 2>/dev/null | tail -n +8 | while read -r old; do rm -f -- "$old"; done || true
+  done
+else
+  rm -f -- "$BACKUP_DIR/kloe-$STAMP.dump"  # 반쯤 쓴 덤프는 남기지 않는다
+fi
+
+SUMMARY="$(.venv/bin/kloe status 2>&1 || true)"
+log "요약: $SUMMARY"
+if [[ -n "$FAILED" ]]; then
+  notify "실패:$FAILED"
+  exit 1
+fi
+if [[ "$SUMMARY" =~ queue=[1-9] ]]; then
+  notify "처리할 배치가 있다. kloe status 로 확인"
+fi

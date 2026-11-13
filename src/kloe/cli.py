@@ -126,6 +126,7 @@ def export_stage(conn, work_dir: Path, stage: str, limit: int, batch_size: int, 
                                 text=r["text"])
             for r in rows
         ], batch_size)
+    db.carry_facts(conn)  # 개정판 뒤에 가져온 옛 조문 결과를 새 조문으로 (멱등)
     rows = db.export_candidates(conn, stage, limit, qx.in_flight_provision_ids(work_dir, stage), recheck)
     jobs = [
         qx.make_job(
@@ -244,6 +245,30 @@ def cmd_agent(args) -> int:
     return 0 if ok == len(results) else 1
 
 
+def status_line(conn, work_dir: Path) -> str:
+    """nightly 끝에 찍는 한 줄 요약: 단계별 대기·처리 중·결과 도착 배치 수, 버린 job 수, verified 수."""
+    verified = {r["stage"]: r["n"] for r in conn.execute(
+        """select payload->>'stage' as stage, count(*) as n from fact where status = 'verified' group by 1""")}
+    verified["program"] = conn.execute(
+        "select count(*) as n from program_fact where status = 'verified'").fetchone()["n"]
+    parts = []
+    for stage in STAGES:
+        n = {state: len(list(qx.stage_dir(work_dir, state, stage).glob("batch-*.jsonl")))
+             for state in ("queue", "claimed", "out")}
+        dropped = qx.stage_dir(work_dir, "failed", stage) / qx.DROPPED
+        nd = len(qx.read_jsonl(dropped)) if dropped.exists() else 0
+        parts.append(f"{stage} queue={n['queue']} claimed={n['claimed']} out={n['out']} "
+                     f"dropped={nd} verified={verified.get(stage, 0)}")
+    return " | ".join(parts)
+
+
+def cmd_status(args) -> int:
+    work_dir, _ = _paths(args)
+    with db.connect(args.db) as conn:
+        print(status_line(conn, work_dir))
+    return 0
+
+
 def cmd_show(args) -> int:
     with db.connect(args.db) as conn:
         for r in db.provisions_as_of(conn, args.law_id, date.fromisoformat(args.as_of)):
@@ -327,6 +352,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=int, default=900, help="배치 하나당 초")
     p.add_argument("--ingest", action="store_true", help="끝나고 바로 kloe ingest")
     p.set_defaults(func=cmd_agent)
+
+    sub.add_parser("status", help="단계별 대기 배치 수와 verified 수 한 줄").set_defaults(func=cmd_status)
 
     p = sub.add_parser("show", help="기준일 조문 재현")
     p.add_argument("--law-id", required=True)

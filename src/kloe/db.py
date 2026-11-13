@@ -62,7 +62,30 @@ def store_parsed(conn: psycopg.Connection, parsed: ParsedLaw) -> tuple[int, dict
             (doc_id, p.article_key, p.heading, p.text, p.text_hash, p.effective_from, p.effective_to),
         ).fetchone()["id"]
     _close_previous_version(conn, d.law_id, doc_id, d.effective, ids)
+    carry_facts(conn)
     return doc_id, ids, True
+
+
+def carry_facts(conn) -> int:
+    """같은 법령·조문 키·본문 해시를 가진 현행 조문으로 verified fact를 복사한다. 넣은 수를 돌려준다.
+
+    개정판은 조문을 전부 새 행으로 넣으므로, 이게 없으면 안 바뀐 조문까지 법령 전체가 다시 분류·추출 큐로 나간다.
+    멱등이라 몇 번 불러도 된다. 판 적재 직후와 내보내기 직전에 부른다: 개정판이 들어온 뒤에 옛 조문으로
+    나갔던 배치 결과가 가져와지면, 그 fact도 다음 내보내기 전에 새 조문으로 넘어간다.
+    위임 대상(하위 법령) 본문이 바뀌었는지는 보지 않는다 (추출 맥락이 옛것일 수 있음, 개선안 검토에서 받아들인 위험)."""
+    cur = conn.execute(
+        """insert into fact (provision_id, text_hash, batch_id, is_benefit, payload, status, extractor, carried_from)
+           select np.id, f.text_hash, f.batch_id, f.is_benefit, f.payload, 'verified', f.extractor,
+                  coalesce(f.carried_from, f.id)
+           from fact f
+           join provision op on op.id = f.provision_id
+           join source_document od on od.id = op.document_id
+           join provision np on np.article_key = op.article_key and np.text_hash = f.text_hash
+                            and np.id <> op.id and np.effective_to is null
+           join source_document nd on nd.id = np.document_id and nd.law_id = od.law_id
+           where f.status = 'verified' and f.text_hash = op.text_hash
+           on conflict (provision_id, text_hash, extractor) do nothing""")
+    return cur.rowcount
 
 
 def _close_previous_version(conn, law_id: str, new_doc_id: int, effective: date, new_ids: dict[str, int]) -> None:

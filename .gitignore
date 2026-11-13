@@ -6,3 +6,4 @@ work/
 data/raw/
 .env
 logs/
+backups/

@@ -42,7 +42,10 @@ launchctl kickstart gui/$(id -u)/com.kloe.nightly   # 지금 한 번 실행
 tail -f ~/Library/Logs/kloe/nightly.log
 ```
 
-`scripts/nightly.sh`가 Docker와 Postgres를 띄우고 `kloe migrate` → `kloe requeue --stale 6h` → `kloe nightly`를 돌린다. 내보내기는 실행마다 최대 5000건이라, 아직 안 나간 조문이 첫 실행에 다 나간다. 그 시각에 Mac이 잠자고 있으면 깨어날 때 실행된다.
+`scripts/nightly.sh`가 Docker와 Postgres를 띄우고 `kloe migrate` → `kloe requeue --stale 6h` → `kloe nightly` → 백업 → `kloe status` 한 줄 요약을 돌린다.
+- 단계가 실패하면 로그에 `실패: <단계>`를 남기고 macOS 알림을 띄운다. migrate가 실패하면 거기서 멈추고, 나머지는 실패해도 다음 단계로 간다.
+- 백업은 `backups/`(git 제외)에 DB 덤프(`pg_dump -Fc`)와 `work/failed` 묶음을 최근 7개씩 둔다. 같은 디스크라 디스크 고장에는 대비가 안 되니 가끔 다른 곳으로 복사한다. 되살리기: `docker compose exec -T postgres pg_restore -U kloe -d kloe --clean < backups/kloe-<시각>.dump`
+- 처리할 배치가 queue에 있으면 알림으로 알려 준다. 지금 상태는 언제든 `.venv/bin/kloe status`. 내보내기는 실행마다 최대 5000건이라, 아직 안 나간 조문이 첫 실행에 다 나간다. 그 시각에 Mac이 잠자고 있으면 깨어날 때 실행된다.
 
 ## L1 헤드리스 실행 (기본)
 
@@ -71,6 +74,7 @@ Mac에서 Claude Code를 `claude -p`로 돌린다. 잠금과 결과 rename은 `k
 .venv/bin/kloe agent --stage classify --model haiku --parallel 2 --max-batches 10 --ingest
 ```
 
+- 법령 개정판이 들어와도 본문이 같은 조문은 이전 결과(fact)를 이어받아 다시 나가지 않는다 (`fact.carried_from`). 본문이 바뀐 조문만 다시 분류·추출된다.
 - 현재 skill 버전의 결과가 이미 있는 조문은 다시 나가지 않는다. 0.1 결과와 0.2 결과가 같이 남고, extract는 둘 중 하나라도 `true`면 그 조문을 내보낸다.
 - 사용량 한도가 걱정되면 `--parallel`과 `--max-batches`를 줄인다.
 

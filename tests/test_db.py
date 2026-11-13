@@ -84,9 +84,29 @@ def test_pipeline_end_to_end(conn, tmp_path):
     assert "5천만원" in next(r["text"] for r in v2 if r["article_key"] == "16-1")
     assert db.provisions_as_of(conn, "999001", date(2025, 6, 1)) == []
 
-    # 새 판의 조문만 다시 분류 대상이 된다 (현행 3개)
+    # 안 바뀐 조문(16-2 등)은 결과를 이어받고, 본문이 바뀐 16-1만 다시 분류 대상이 된다
+    carried = {r["article_key"] for r in conn.execute(
+        """select p.article_key from fact f join provision p on p.id = f.provision_id
+           where f.carried_from is not null and f.payload->>'stage' = 'classify'""")}
+    assert "16-1" not in carried and "16-2" in carried
     paths = cli.export_stage(conn, work, "classify", 100, 10)
-    assert sum(len(qi.read_jsonl(p)) for p in paths) == 3
+    assert [j["article_key"] for p in paths for j in qi.read_jsonl(p)] == ["16-1"]
+    assert db.carry_facts(conn) == 0  # 멱등
+    line = cli.status_line(conn, work)
+    assert "classify queue=" in line and "program queue=0" in line
+
+
+def test_carry_facts_for_results_ingested_after_new_version(conn, tmp_path):
+    """옛 판 조문으로 나간 배치가 개정판 적재 뒤에 들어와도, 다음 내보내기에서 다시 나가지 않는다."""
+    work = tmp_path / "work"
+    cli.load_files(conn, [FIX / "law_v1.xml"])
+    paths = cli.export_stage(conn, work, "classify", limit=100, batch_size=10)
+    qi.claim(work, "classify", paths[0].name)
+    run_agent(work, "classify", paths[0].name)
+    cli.load_files(conn, [FIX / "law_v2.xml"])  # 결과를 가져오기 전에 개정판이 들어옴
+    cli.ingest_stage(conn, work, "classify")
+    again = cli.export_stage(conn, work, "classify", 100, 10)
+    assert [j["article_key"] for p in again for j in qi.read_jsonl(p)] == ["16-1"]
 
 
 def qx_first_job(work):
