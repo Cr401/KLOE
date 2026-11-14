@@ -1,10 +1,10 @@
 ---
 name: kloe-extract
 description: KLOE L1 추출. 분류에서 혜택(true)으로 판정된 조문 배치를 읽고, 조문마다 역할(혜택 본문·요건·혜택 아님)을 다시 가르고 세율·금액·요건·기한을 인용과 함께 뽑아 work/out/extract 에 쓴다.
-version: 0.2
+version: 0.3
 ---
 
-# kloe-extract v0.2
+# kloe-extract v0.3
 
 너는 KLOE 파이프라인의 L1 추출 단계다. 앞 단계(분류)는 **애매하면 true** 로 넘겼다. 그래서 여기서 두 가지를 한다.
 
@@ -64,7 +64,12 @@ version: 0.2
 | reward | 포상금·보상금 |
 
 - `parent_ref`: 이 조문이 기대는 다른 조·항의 표기를 본문에서 **글자 그대로** 처음 하나 (예: `법 제29조의4제1항`, `제1항`, `제5항`).
-  같은 조의 다른 항을 가리키는 "제1항에 따른", "제5항에 따른 … 은" 도 넣는다. condition이면 거의 항상 있다. benefit도 다른 항을 전제로 하면 넣는다.
+  같은 조의 다른 항을 가리키는 "제1항에 따른", "제5항에 따른 … 은" 도 넣는다. condition이면 거의 항상 있다.
+  **상위 조문은 이 조문이 바꾸는 혜택을 주는 곳뿐이다** (0.3). 이 조문이 그 혜택의 한도·계산·배제·추가 요건을 정할 때, 또는 "제1항에 따른 통합을 하는 경우"처럼 그 혜택을 전제로 할 때만 넣는다.
+  혜택을 **직접 주는** 조문(role=benefit)이 정의·요건·기준 시점을 빌려 오려고 인용한 조항은 상위 조문이 아니다 → `null`. 다른 법률의 조항(「법인세법」 …)은 넣지 않는다.
+    - "제16조제1항제3호에 따른 벤처기업등의 … 1천500만원" → 정의를 빌린 것, `null`
+    - "제2항 각 호의 요건을 모두 갖춘 계좌" → 요건을 빌린 것, `null`
+    - "제4항제1호에 따른 소득공제 적용 과세기간 이후에 납입한 금액만" → 기준 시점, `null`
   여러 항을 나열하면 나열 그대로 (예: `제1항, 제2항 및 제4항부터 제7항까지`). 본문에 없으면 `null`.
 - `beneficiary`: 받는 주체를 원문 표현 그대로 짧게 (예: `중소기업`, `거주자`, `영어조합법인의 조합원`). 주체가 여럿이면 `·` 로 모두 (예: `업무집행조합원·민간재간접벤처투자조합의 업무집행조합원`).
 - `trigger_kind`: invest, hire, relocate, hold, found, spend, report, participate 중 하나 또는 `null`. `trigger`: 무엇을 하면 받는지 한 줄.
@@ -72,6 +77,8 @@ version: 0.2
   - `raw`: 원문 표현 그대로 (예: `100분의 10`, `3천만원`).
   - `rate`: 소수로 (100분의 10 → 0.1). `cap_krw`: 원 단위 정수 (3천만원 → 30000000).
   - 근거 인용을 `{"field": "benefit_size.rate", ...}` 또는 `benefit_size.cap_krw` 로 **반드시** 넣는다. 인용 안에 그 숫자가 없으면 검증에서 떨어진다.
+  - `rate` 는 원문에 적힌 비율 그대로다. 직접 계산한 값(예: 0.0826)은 쓰지 않는다. 계산해야만 나오면 `rate` 는 비우고 `raw` 와 `uncertain` 에 적는다 (0.3).
+  - "100분의 100을 한도로 한다"처럼 계산 과정의 비율 상한이나 기준 비율은 혜택율이 아니다 → `rate` 에 넣지 않는다.
   - **구분별로 율·금액이 다르면** (예: 지역·기업 규모별 100분의 25·50·75·100, 1인당 400만원·800만원·1,100만원) `benefit_size` 를 비우지 않는다:
     `raw` 에 구분별 값을 짧게 나열하고, `rate`·`cap_krw` 에는 **가장 큰 값**을 넣고, 그 값이 든 구간을 인용한다.
     1인당·건당 금액이면 `unit` 에 `1인당` 같은 단위를 쓴다. `uncertain` 에 `{"field": "benefit_size", "reason": "구분별로 다름: …"}`.
@@ -92,16 +99,16 @@ role이 none이면 `is_benefit: false`, `not_benefit_reason` 만 채우고 나�
 한 줄에 JSON 하나. `fact` 안에 위 필드를 넣는다.
 
 ```json
-{"job_id": "extract:84213:3f9a1c2b4d5e", "extractor": "cowork:haiku:kloe-extract@0.2", "fact": {"is_benefit": true, "role": "benefit", "benefit_type": "deduction", "beneficiary": "거주자", "trigger_kind": "invest", "trigger": "벤처기업 등에 출자", "benefit_size": {"raw": "100분의 10", "rate": 0.1}, "time_window": {"sunset": "2025-12-31"}, "quotes": [{"field": "is_benefit", "quote": "종합소득금액에서 공제한다"}, {"field": "benefit_size.rate", "quote": "100분의 10"}, {"field": "time_window.sunset", "quote": "2025년 12월 31일까지"}]}}
+{"job_id": "extract:84213:3f9a1c2b4d5e", "extractor": "cowork:haiku:kloe-extract@0.3", "fact": {"is_benefit": true, "role": "benefit", "benefit_type": "deduction", "beneficiary": "거주자", "trigger_kind": "invest", "trigger": "벤처기업 등에 출자", "benefit_size": {"raw": "100분의 10", "rate": 0.1}, "time_window": {"sunset": "2025-12-31"}, "quotes": [{"field": "is_benefit", "quote": "종합소득금액에서 공제한다"}, {"field": "benefit_size.rate", "quote": "100분의 10"}, {"field": "time_window.sunset", "quote": "2025년 12월 31일까지"}]}}
 ```
 
 ```json
-{"job_id": "extract:2302:9a8b7c6d5e4f", "extractor": "cowork:haiku:kloe-extract@0.2", "fact": {"is_benefit": true, "role": "condition", "parent_ref": "법 제29조의4제1항", "benefit_type": "credit", "conditions": [{"tag": "평균임금 증가율", "text": "직전 3개 과세연도 평균임금 증가율의 평균을 계산식으로 정함"}], "quotes": [{"field": "role", "quote": "법 제29조의4제1항 및 제2항을 적용할 때"}]}}
+{"job_id": "extract:2302:9a8b7c6d5e4f", "extractor": "cowork:haiku:kloe-extract@0.3", "fact": {"is_benefit": true, "role": "condition", "parent_ref": "법 제29조의4제1항", "benefit_type": "credit", "conditions": [{"tag": "평균임금 증가율", "text": "직전 3개 과세연도 평균임금 증가율의 평균을 계산식으로 정함"}], "quotes": [{"field": "role", "quote": "법 제29조의4제1항 및 제2항을 적용할 때"}]}}
 ```
 
 ```json
-{"job_id": "extract:1748:0f1e2d3c4b5a", "extractor": "cowork:haiku:kloe-extract@0.2", "fact": {"is_benefit": false, "role": "none", "not_benefit_reason": "공제세액 계산을 대통령령에 위임만 함"}}
+{"job_id": "extract:1748:0f1e2d3c4b5a", "extractor": "cowork:haiku:kloe-extract@0.3", "fact": {"is_benefit": false, "role": "none", "not_benefit_reason": "공제세액 계산을 대통령령에 위임만 함"}}
 ```
 
-- `extractor`: `cowork:<모델>:kloe-extract@0.2`. 실행기가 값을 정해 주면 그대로 쓴다.
+- `extractor`: `cowork:<모델>:kloe-extract@0.3`. 실행기가 값을 정해 주면 그대로 쓴다.
 - 부정수급, 명의 위장, 허위 증빙으로 이어지는 쓰임은 다루지 않는다.
