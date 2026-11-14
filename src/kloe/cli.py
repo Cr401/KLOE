@@ -310,21 +310,32 @@ def cmd_status(args) -> int:
     return 0
 
 
+DIRECTIONS = (("lost", "놓친 것"), ("wrong", "틀린 것"), ("extra", "지어낸 것"))
+
+
 def write_audit_report(conn, reports_dir: Path) -> Path:
+    """DB의 감사 결과 전체를 추출 버전별로 나눠 쓴다. DB에서 매번 다시 만들므로 같은 날 덮어써도 잃는 것이 없다."""
     s = db.audit_summary(conn)
     lines = [f"# 추출 감사 {date.today().isoformat()}", "",
              f"감사한 fact {s['total']}건, 문제 없음 {s['ok']}건. 감사 모델: {', '.join(s['extractors']) or '없음'}.",
-             "fact는 고치지 않았다. 계통 오류(같은 필드·방향이 반복)가 보이면 kloe-extract skill을 고친다.", "",
-             "## 필드별 지적", "", "| 필드 | lost (놓침) | wrong (틀림) | extra (지어냄) |", "| --- | --- | --- | --- |"]
-    for field in sorted({f for f, _ in s["by_field"]}):
-        c = [s["by_field"].get((field, d), 0) for d in ("lost", "wrong", "extra")]
-        lines.append(f"| {field} | {c[0]} | {c[1]} | {c[2]} |")
-    lines += ["", "## 놓친 것 (lost)", ""]
-    for i in s["lost"] or []:
-        lines.append(f"- {i['law_name']} {i['article_key']} (role={i['role']}) `{i['field']}`: {i['problem']}"
-                     f" — 원문: \"{i['quote']}\"")
-    if not s["lost"]:
-        lines.append("없음.")
+             "fact는 고치지 않았다. 계통 오류(같은 필드·방향이 반복)가 보이면 kloe-extract skill을 고친다."]
+    # 최신 추출 버전을 먼저
+    for ver, g in sorted(s["groups"].items(), key=lambda kv: kv[0].rsplit("@", 1)[-1], reverse=True):
+        lines += ["", f"## 추출 {ver}: {g['total']}건 중 문제 없음 {g['ok']}건", "",
+                  "| 필드 | lost (놓침) | wrong (틀림) | extra (지어냄) |", "| --- | --- | --- | --- |"]
+        for field in sorted({f for f, _ in g["by_field"]}):
+            c = [g["by_field"].get((field, d), 0) for d, _ in DIRECTIONS]
+            lines.append(f"| {field} | {c[0]} | {c[1]} | {c[2]} |")
+        for d, label in DIRECTIONS:
+            items = [i for i in g["issues"] if i["direction"] == d]
+            if not items:
+                continue
+            lines += ["", f"### {label} ({d})", ""]
+            for i in items:
+                lines.append(f"- {i['law_name']} {i['article_key']} (role={i['role']}) `{i['field']}`: {i['problem']}"
+                             f" — 원문: \"{i['quote']}\"")
+    if not s["groups"]:
+        lines += ["", "감사 결과 없음."]
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = reports_dir / f"audit-{date.today().isoformat()}.md"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

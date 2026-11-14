@@ -89,3 +89,11 @@ def test_fraction_rates(quote, rate):
     from kloe.schema import BenefitSize, Quote
     assert check_size(BenefitSize(raw=quote, rate=rate), [Quote(field="benefit_size.rate", quote=quote)]) == []
     assert check_size(BenefitSize(raw=quote, rate=rate / 2), [Quote(field="benefit_size.rate", quote=quote)])
+
+
+def test_quote_matches_compatibility_ideograph():
+    from kloe.schema import Quote
+    from kloe.verify import check_quotes
+
+    src = "영(\uf9b2)의 세율을 적용한다"  # 법령 본문의 호환 한자 零
+    assert check_quotes([Quote(field="is_benefit", quote="영(\u96f6)의 세율을 적용한다")], src) == []

@@ -326,21 +326,23 @@ def export_audit_candidates(conn, sample: int, exclude: set[int], law_filter: st
 
 
 def audit_summary(conn) -> dict:
-    """감사 결과 집계: 전체·ok 수, 필드×방향별 지적 수, 놓친(lost) 지적 목록."""
+    """감사 결과 집계를 추출 skill 버전(fact.extractor)별로: 전체·ok 수, 필드×방향별 지적 수, 지적 목록."""
     rows = list(conn.execute(
-        """select a.ok, a.payload, a.extractor, p.article_key, d.law_name, f.payload as fact
+        """select a.ok, a.payload, a.extractor, f.extractor as fact_extractor, p.article_key, d.law_name,
+                  f.payload as fact
            from audit a join fact f on f.id = a.fact_id join provision p on p.id = f.provision_id
            join source_document d on d.id = p.document_id order by d.law_name, p.id"""))
-    by_field: dict[tuple[str, str], int] = {}
-    lost = []
+    groups: dict[str, dict] = {}
     for r in rows:
+        g = groups.setdefault(r["fact_extractor"], {"total": 0, "ok": 0, "by_field": {}, "issues": []})
+        g["total"] += 1
+        g["ok"] += bool(r["ok"])
         for i in r["payload"].get("issues", []):
             key = (i["field"].split(".", 1)[0], i["direction"])
-            by_field[key] = by_field.get(key, 0) + 1
-            if i["direction"] == "lost":
-                lost.append({"law_name": r["law_name"], "article_key": r["article_key"],
-                             "role": r["fact"].get("role"), **i})
-    return {"total": len(rows), "ok": sum(r["ok"] for r in rows), "by_field": by_field, "lost": lost,
+            g["by_field"][key] = g["by_field"].get(key, 0) + 1
+            g["issues"].append({"law_name": r["law_name"], "article_key": r["article_key"],
+                                "role": r["fact"].get("role"), **i})
+    return {"total": len(rows), "ok": sum(bool(r["ok"]) for r in rows), "groups": groups,
             "extractors": sorted({r["extractor"] for r in rows})}
 
 
